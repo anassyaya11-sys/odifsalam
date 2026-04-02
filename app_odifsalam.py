@@ -7,8 +7,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-import os
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DB_PATH = Path("suivi_chantier.db")
 st.set_page_config(page_title="ODIFSALAM - Gestion de Projets", layout="wide", page_icon="🏗️", initial_sidebar_state="expanded")
 
 CURRENCIES = {"GNF":"GNF","FCFA":"FCFA","USD":"$","EUR":"€"}
@@ -64,7 +63,7 @@ div[data-testid="metric-container"]{background:#f8f9fa;border:1px solid #dee2e6;
 
 # ── DATABASE ──────────────────────────────────────────────────
 def get_conn():
-    import psycopg2; c=psycopg2.connect(DATABASE_URL); return c
+    c=sqlite3.connect(DB_PATH,check_same_thread=False); c.row_factory=sqlite3.Row; c.execute("PRAGMA foreign_keys=ON"); return c
 
 def init_db():
     conn=get_conn(); cur=conn.cursor()
