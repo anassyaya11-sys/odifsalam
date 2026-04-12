@@ -33,8 +33,17 @@ def _get_db_url() -> str:
 @st.cache_resource
 def _get_pool():
     """Crée un pool de connexions PostgreSQL (singleton via st.cache_resource)."""
-    url = _get_db_url()
-    return pg_pool.ThreadedConnectionPool(minconn=1, maxconn=10, dsn=url)
+    # On passe les paramètres explicitement pour éviter que psycopg2
+    # tronque le username (postgres.PROJECT_REF) dans l'URL
+    return pg_pool.ThreadedConnectionPool(
+        minconn=1, maxconn=10,
+        host="aws-0-eu-west-1.pooler.supabase.com",
+        port=6543,
+        dbname="postgres",
+        user="postgres.dimjiazzuqqqhgfzsmxe",
+        password="gUpmS3uGgNEfymaQ",
+        sslmode="require"
+    )
 
 def get_conn():
     """Retourne une connexion depuis le pool."""
