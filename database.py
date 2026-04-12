@@ -1,150 +1,137 @@
 # -*- coding: utf-8 -*-
 """
 ODIFSALAM — Couche d'accès données PostgreSQL/Supabase
-Utilise SQLAlchemy + pg8000 (driver pur Python, compatible Python 3.14).
+Utilise psycopg2 avec paramètres explicites (pas de parsing URL).
+Compatible Python 3.12 + Supabase Transaction Pooler (port 6543).
 """
 
 import os
 import re
-import ssl
 import pandas as pd
 import streamlit as st
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL as SA_URL
+import psycopg2
+import psycopg2.pool
+import psycopg2.extras
 
-# ── CONNEXION SUPABASE ──────────────────────────────────────────────────────
+# ── CREDENTIALS ─────────────────────────────────────────────────────────────
 def _get_creds():
-    """Récupère les credentials depuis st.secrets ou variables d'environnement."""
+    """Extrait les credentials depuis DATABASE_URL ou variables d'env."""
     try:
         db_url = st.secrets.get("DATABASE_URL", "")
     except Exception:
         db_url = os.environ.get("DATABASE_URL", "")
 
     if db_url:
-        # Parser l'URL manuellement — pg8000 ne supporte pas le format URL avec sslmode
-        # Format: postgresql://user:pass@host:port/db?sslmode=require
+        # Regex robuste : supporte postgres.PROJECT_REF comme username
         m = re.match(
-            r'postgresql(?:\+\w+)?://([^:@]+):([^@]+)@([^:/]+):?(\d+)?/([^?]+)',
+            r'postgres(?:ql)?(?:\+\w+)?://([^:@]+):([^@]+)@([^:/]+):?(\d+)?/([^?]+)',
             db_url
         )
         if m:
             return {
-                "user": m.group(1),
+                "user":     m.group(1),
                 "password": m.group(2),
-                "host": m.group(3),
-                "port": int(m.group(4) or 5432),
-                "database": m.group(5).split("?")[0],
+                "host":     m.group(3),
+                "port":     int(m.group(4) or 6543),
+                "dbname":   m.group(5).split("?")[0],
+                "sslmode":  "require",
             }
 
-    # Fallback hardcodé (Transaction Pooler Supabase)
+    # Fallback : paramètres hardcodés (Transaction Pooler Supabase)
     return {
-        "user": os.environ.get("DB_USER", "postgres.dimjiazzuqqqhgfzsmxe"),
+        "user":     os.environ.get("DB_USER",     "postgres.dimjiazzuqqqhgfzsmxe"),
         "password": os.environ.get("DB_PASSWORD", "gUpmS3uGgNEfymaQ"),
-        "host": os.environ.get("DB_HOST", "aws-0-eu-west-1.pooler.supabase.com"),
-        "port": int(os.environ.get("DB_PORT", "6543")),
-        "database": os.environ.get("DB_NAME", "postgres"),
+        "host":     os.environ.get("DB_HOST",     "aws-0-eu-west-1.pooler.supabase.com"),
+        "port":     int(os.environ.get("DB_PORT", "6543")),
+        "dbname":   os.environ.get("DB_NAME",     "postgres"),
+        "sslmode":  "require",
     }
 
+# ── POOL DE CONNEXIONS ───────────────────────────────────────────────────────
 @st.cache_resource
-def _get_engine():
-    """Crée le moteur SQLAlchemy pg8000 (singleton via st.cache_resource)."""
-    creds = _get_creds()
-
-    # SA_URL.create passe le username directement (pas d'encodage URL)
-    # → préserve postgres.PROJECT_REF avec le point
-    url = SA_URL.create(
-        drivername="postgresql+pg8000",
-        username=creds["user"],
-        password=creds["password"],
-        host=creds["host"],
-        port=creds["port"],
-        database=creds["database"],
+def _get_pool():
+    """Crée un pool de connexions psycopg2 (singleton Streamlit)."""
+    c = _get_creds()
+    return psycopg2.pool.ThreadedConnectionPool(
+        minconn=1,
+        maxconn=5,
+        host=c["host"],
+        port=c["port"],
+        dbname=c["dbname"],
+        user=c["user"],
+        password=c["password"],
+        sslmode=c["sslmode"],
+        connect_timeout=15,
+        options="-c statement_timeout=30000",
     )
 
-    # SSL context pour pg8000 (ne supporte pas sslmode= comme psycopg2)
-    ssl_ctx = ssl.create_default_context()
-    ssl_ctx.check_hostname = False
-    ssl_ctx.verify_mode = ssl.CERT_NONE  # Supabase pooler accepte sans vérif cert
+def get_conn():
+    return _get_pool().getconn()
 
-    return create_engine(
-        url,
-        connect_args={"ssl_context": ssl_ctx},
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=2,
-    )
+def release_conn(conn):
+    try:
+        _get_pool().putconn(conn)
+    except Exception:
+        pass
 
-# ── ADAPTATEUR SQL : ? → :p1, :p2, … ──────────────────────────────────────
-def _adapt(sql: str, params=None):
-    """
-    Convertit les ? (style SQLite) en :p1, :p2, … (style SQLAlchemy text()).
-    Retourne (new_sql, params_dict).
-    """
-    count = [0]
-    def replacer(m):
-        count[0] += 1
-        return f":p{count[0]}"
-    new_sql = re.sub(r'\?', replacer, sql)
-    pdict = {}
-    if params:
-        for i, v in enumerate(params, 1):
-            pdict[f"p{i}"] = v
-    return new_sql, pdict
-
-# ── FONCTIONS PRINCIPALES ───────────────────────────────────────────────────
+# ── FONCTIONS D'ACCÈS AUX DONNÉES ───────────────────────────────────────────
 def qdf(sql: str, p=None) -> pd.DataFrame:
     """Exécute une SELECT et retourne un DataFrame."""
-    new_sql, pdict = _adapt(sql, p)
+    conn = get_conn()
     try:
-        with _get_engine().connect() as conn:
-            return pd.read_sql_query(text(new_sql), conn, params=pdict or None)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, p or ())
+            rows = cur.fetchall()
+        return pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
     except Exception as e:
         print(f"[qdf] Erreur : {e}\nSQL : {sql}")
+        try: conn.rollback()
+        except Exception: pass
         return pd.DataFrame()
+    finally:
+        release_conn(conn)
 
 def exsql(sql: str, p=None):
     """Exécute INSERT/UPDATE/DELETE. Retourne l'id généré pour les INSERT."""
-    new_sql, pdict = _adapt(sql, p)
     is_insert = sql.strip().upper().startswith("INSERT")
+    full_sql = sql
     if is_insert and "RETURNING" not in sql.upper():
-        new_sql = new_sql + " RETURNING id"
+        full_sql = sql + " RETURNING id"
+    conn = get_conn()
     try:
-        with _get_engine().connect() as conn:
-            result = conn.execute(text(new_sql), pdict)
+        with conn.cursor() as cur:
+            cur.execute(full_sql, p or ())
             conn.commit()
             if is_insert:
-                row = result.fetchone()
+                row = cur.fetchone()
                 return row[0] if row else None
             return None
     except Exception as e:
         print(f"[exsql] Erreur : {e}\nSQL : {sql}")
+        try: conn.rollback()
+        except Exception: pass
         raise
+    finally:
+        release_conn(conn)
 
 def exmany(sql: str, rows):
-    """Exécute une insertion en masse."""
+    """Exécute une insertion en masse avec executemany."""
+    conn = get_conn()
     try:
-        with _get_engine().connect() as conn:
-            for row in rows:
-                new_sql, pdict = _adapt(sql, row)
-                conn.execute(text(new_sql), pdict)
-            conn.commit()
+        with conn.cursor() as cur:
+            cur.executemany(sql, rows)
+        conn.commit()
     except Exception as e:
         print(f"[exmany] Erreur : {e}")
+        try: conn.rollback()
+        except Exception: pass
         raise
+    finally:
+        release_conn(conn)
 
-# ── COMPATIBILITÉ (non utilisé avec SQLAlchemy) ─────────────────────────────
-def get_conn():
-    """Compatibilité ascendante — retourne None (SQLAlchemy gère le pool)."""
-    return None
-
-def release_conn(conn):
-    """Compatibilité ascendante — rien à faire avec SQLAlchemy."""
-    pass
-
-# ── INIT BASE DE DONNÉES ────────────────────────────────────────────────────
+# ── INIT BASE DE DONNÉES ─────────────────────────────────────────────────────
 def init_db():
     """Crée toutes les tables si elles n'existent pas."""
-    engine = _get_engine()
     ddl_statements = [
         """CREATE TABLE IF NOT EXISTS dossiers (
             id SERIAL PRIMARY KEY, nom TEXT NOT NULL UNIQUE,
@@ -332,12 +319,17 @@ def init_db():
             table_name TEXT NOT NULL, action TEXT NOT NULL,
             record_id INTEGER, details TEXT DEFAULT '')""",
     ]
+    conn = get_conn()
     try:
-        with engine.connect() as conn:
+        with conn.cursor() as cur:
             for ddl in ddl_statements:
-                conn.execute(text(ddl))
-            conn.commit()
+                cur.execute(ddl)
+        conn.commit()
         print("[init_db] ✅ Toutes les tables créées/vérifiées.")
     except Exception as e:
         print(f"[init_db] ❌ Erreur : {e}")
+        try: conn.rollback()
+        except Exception: pass
         raise
+    finally:
+        release_conn(conn)
