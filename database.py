@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 ODIFSALAM — Couche d'accès données PostgreSQL/Supabase
-Utilise SQLAlchemy + psycopg2 pour éviter les problèmes d'encodage username.
+Utilise SQLAlchemy + pg8000 (driver pur Python, compatible Python 3.14).
 """
 
 import os
 import re
+import ssl
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
@@ -20,10 +21,10 @@ def _get_creds():
         db_url = os.environ.get("DATABASE_URL", "")
 
     if db_url:
-        # Parser l'URL manuellement pour extraire les composantes
+        # Parser l'URL manuellement — pg8000 ne supporte pas le format URL avec sslmode
         # Format: postgresql://user:pass@host:port/db?sslmode=require
         m = re.match(
-            r'postgresql(?:\+\w+)?://([^:]+):([^@]+)@([^:/]+):?(\d+)?/([^?]+)',
+            r'postgresql(?:\+\w+)?://([^:@]+):([^@]+)@([^:/]+):?(\d+)?/([^?]+)',
             db_url
         )
         if m:
@@ -31,11 +32,11 @@ def _get_creds():
                 "user": m.group(1),
                 "password": m.group(2),
                 "host": m.group(3),
-                "port": int(m.group(4) or 6543),
-                "database": m.group(5),
+                "port": int(m.group(4) or 5432),
+                "database": m.group(5).split("?")[0],
             }
 
-    # Fallback hardcodé
+    # Fallback hardcodé (Transaction Pooler Supabase)
     return {
         "user": os.environ.get("DB_USER", "postgres.dimjiazzuqqqhgfzsmxe"),
         "password": os.environ.get("DB_PASSWORD", "gUpmS3uGgNEfymaQ"),
@@ -46,21 +47,28 @@ def _get_creds():
 
 @st.cache_resource
 def _get_engine():
-    """Crée le moteur SQLAlchemy (singleton via st.cache_resource)."""
+    """Crée le moteur SQLAlchemy pg8000 (singleton via st.cache_resource)."""
     creds = _get_creds()
-    # SA_URL.create passe le username directement à psycopg2 sans encodage URL
-    # → évite la troncature du '.' dans postgres.PROJECT_REF
+
+    # SA_URL.create passe le username directement (pas d'encodage URL)
+    # → préserve postgres.PROJECT_REF avec le point
     url = SA_URL.create(
-        drivername="postgresql+psycopg2",
+        drivername="postgresql+pg8000",
         username=creds["user"],
         password=creds["password"],
         host=creds["host"],
         port=creds["port"],
         database=creds["database"],
     )
+
+    # SSL context pour pg8000 (ne supporte pas sslmode= comme psycopg2)
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE  # Supabase pooler accepte sans vérif cert
+
     return create_engine(
         url,
-        connect_args={"sslmode": "require", "connect_timeout": 15},
+        connect_args={"ssl_context": ssl_ctx},
         pool_pre_ping=True,
         pool_size=5,
         max_overflow=2,
@@ -114,11 +122,10 @@ def exsql(sql: str, p=None):
 
 def exmany(sql: str, rows):
     """Exécute une insertion en masse."""
-    new_sql, _ = _adapt(sql)
     try:
         with _get_engine().connect() as conn:
             for row in rows:
-                _, pdict = _adapt(sql, row)
+                new_sql, pdict = _adapt(sql, row)
                 conn.execute(text(new_sql), pdict)
             conn.commit()
     except Exception as e:
@@ -126,10 +133,6 @@ def exmany(sql: str, rows):
         raise
 
 # ── COMPATIBILITÉ (non utilisé avec SQLAlchemy) ─────────────────────────────
-class _FakeConn:
-    """Connexion factice pour la compatibilité avec les anciens imports."""
-    pass
-
 def get_conn():
     """Compatibilité ascendante — retourne None (SQLAlchemy gère le pool)."""
     return None
