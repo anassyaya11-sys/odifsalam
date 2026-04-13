@@ -44,10 +44,10 @@ def _get_creds() -> dict:
                 "sslmode":  "require",
             }
 
-    # Fallback — Session Pooler port 5432
+    # Fallback — Transaction Pooler port 6543
     return {
         "user":     os.environ.get("DB_USER",     "postgres.dimjiazzuqqqhgfzsmxe"),
-        "password": os.environ.get("DB_PASSWORD", "gUpmS3uGgNEfymaQ"),
+        "password": os.environ.get("DB_PASSWORD", "EzqLBLeVG5Fg8seq"),
         "host":     os.environ.get("DB_HOST",     "aws-0-eu-west-1.pooler.supabase.com"),
         "port":     int(os.environ.get("DB_PORT", "6543")),  # Transaction Pooler
         "dbname":   os.environ.get("DB_NAME",     "postgres"),
