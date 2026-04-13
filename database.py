@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-ODIFSALAM — Couche d'accès données PostgreSQL/Supabase
-Stratégie : connexions directes psycopg2 (pas de ThreadedConnectionPool)
-             + Transaction Pooler Supabase port 6543
-Python 3.12 requis (voir runtime.txt).
+ODIFSALAM - Couche acces donnees PostgreSQL/Supabase
+Connexions directes psycopg2 + Transaction Pooler port 6543
+Python 3.12 requis.
 """
 
 import os
@@ -13,14 +12,8 @@ import streamlit as st
 import psycopg2
 import psycopg2.extras
 
-# ── CREDENTIALS ─────────────────────────────────────────────────────────────
 @st.cache_resource
 def _get_creds() -> dict:
-    """
-    Extrait les credentials une seule fois (mis en cache).
-    Priorité : st.secrets > DATABASE_URL env > fallback hardcodé.
-    Port 6543 = Transaction Pooler Supabase.
-    """
     db_url = ""
     try:
         db_url = st.secrets.get("DATABASE_URL", "")
@@ -28,9 +21,7 @@ def _get_creds() -> dict:
         pass
     if not db_url:
         db_url = os.environ.get("DATABASE_URL", "")
-
     if db_url:
-        # Nettoyer les sauts de ligne éventuels
         db_url = db_url.replace("\n", "").replace("\r", "").strip()
         m = re.match(
             r'postgres(?:ql)?(?:\+\w+)?://([^:@]+):([^@]+)@([^:/]+):?(\d+)?/([^?#]+)',
@@ -45,8 +36,6 @@ def _get_creds() -> dict:
                 "dbname":   m.group(5),
                 "sslmode":  "require",
             }
-
-    # Fallback — Transaction Pooler port 6543
     return {
         "user":     os.environ.get("DB_USER",     "postgres.dimjiazzuqqqhgfzsmxe"),
         "password": os.environ.get("DB_PASSWORD", "OdifSalam2024"),
@@ -56,12 +45,7 @@ def _get_creds() -> dict:
         "sslmode":  "require",
     }
 
-# ── CONNEXION DIRECTE (pas de pool — connexion par opération) ────────────────
 def get_conn():
-    """
-    Ouvre une connexion psycopg2 fraîche via Transaction Pooler (port 6543).
-    Pas de ThreadedConnectionPool : Supabase gère le pooling côté serveur.
-    """
     c = _get_creds()
     try:
         return psycopg2.connect(
@@ -71,30 +55,28 @@ def get_conn():
             user=c["user"],
             password=c["password"],
             sslmode=c["sslmode"],
-            connect_timeout=15,
+            connect_timeout=30,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
         )
     except psycopg2.OperationalError as e:
         msg = str(e)
         if "Circuit breaker" in msg:
-            st.error(
-                "🔴 Supabase a temporairement bloqué les connexions (trop de tentatives échouées).\n\n"
-                "⏳ **Attendez 5-10 minutes** puis rechargez la page. Le disjoncteur se réinitialise automatiquement."
-            )
+            st.error("Supabase a temporairement bloque les connexions. Attendez 5-10 minutes puis rechargez.")
         else:
-            st.error(f"🔴 Erreur connexion Supabase : {e}")
-            st.info(f"Paramètres : host={c['host']} port={c['port']} user={c['user']} db={c['dbname']}")
+            st.error(f"Erreur connexion Supabase : {e}")
+            st.info(f"Parametres : host={c['host']} port={c['port']} user={c['user']} db={c['dbname']}")
         raise
 
 def release_conn(conn):
-    """Ferme la connexion proprement."""
     try:
         conn.close()
     except Exception:
         pass
 
-# ── FONCTIONS D'ACCÈS AUX DONNÉES ───────────────────────────────────────────
 def qdf(sql: str, p=None) -> pd.DataFrame:
-    """Exécute une SELECT et retourne un DataFrame."""
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -102,7 +84,7 @@ def qdf(sql: str, p=None) -> pd.DataFrame:
             rows = cur.fetchall()
         return pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
     except Exception as e:
-        print(f"[qdf] {e}\n{sql}")
+        print(f"[qdf] {e}")
         try: conn.rollback()
         except Exception: pass
         return pd.DataFrame()
@@ -110,7 +92,6 @@ def qdf(sql: str, p=None) -> pd.DataFrame:
         release_conn(conn)
 
 def exsql(sql: str, p=None):
-    """Exécute INSERT/UPDATE/DELETE. Retourne l'id si INSERT."""
     is_insert = sql.strip().upper().startswith("INSERT")
     full_sql = sql if not is_insert or "RETURNING" in sql.upper() else sql + " RETURNING id"
     conn = get_conn()
@@ -123,7 +104,7 @@ def exsql(sql: str, p=None):
                 return row[0] if row else None
         return None
     except Exception as e:
-        print(f"[exsql] {e}\n{sql}")
+        print(f"[exsql] {e}")
         try: conn.rollback()
         except Exception: pass
         raise
@@ -131,7 +112,6 @@ def exsql(sql: str, p=None):
         release_conn(conn)
 
 def exmany(sql: str, rows):
-    """Exécute une requête sur plusieurs lignes."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -145,9 +125,7 @@ def exmany(sql: str, rows):
     finally:
         release_conn(conn)
 
-# ── INIT BASE DE DONNÉES ─────────────────────────────────────────────────────
 def init_db():
-    """Crée toutes les tables si elles n'existent pas."""
     ddl_statements = [
         "CREATE TABLE IF NOT EXISTS dossiers (id SERIAL PRIMARY KEY, nom TEXT NOT NULL UNIQUE, description TEXT DEFAULT '', client TEXT DEFAULT '', date_creation TEXT DEFAULT '', statut TEXT DEFAULT 'En cours', observation TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS rues (id SERIAL PRIMARY KEY, dossier_id INTEGER REFERENCES dossiers(id) ON DELETE SET NULL, nom TEXT NOT NULL, zone TEXT DEFAULT '', longueur_m REAL DEFAULT 0, largeur_m REAL DEFAULT 0, observation TEXT DEFAULT '', numero_marche TEXT DEFAULT '', objet_marche TEXT DEFAULT '', maitre_ouvrage TEXT DEFAULT '', maitre_ouvrage_delegue TEXT DEFAULT '', entreprise TEXT DEFAULT '', bureau_controle TEXT DEFAULT '', labo TEXT DEFAULT '', coordinateur_securite TEXT DEFAULT '', date_notification TEXT DEFAULT '', date_demarrage TEXT DEFAULT '', delai_jours REAL DEFAULT 0, delai_mois REAL DEFAULT 0, statut_chantier TEXT DEFAULT 'En cours')",
