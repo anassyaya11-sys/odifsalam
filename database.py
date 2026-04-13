@@ -1,105 +1,110 @@
 # -*- coding: utf-8 -*-
 """
-ODIFSALAM - Couche acces donnees PostgreSQL/Supabase
-Connexions directes psycopg2 via URL DSN
+ODIFSALAM - Couche acces donnees via Supabase REST API (supabase-py)
+Utilise HTTPS au lieu de TCP/SSL (psycopg2).
 Python 3.12 requis.
 """
 
 import os
-import re
 import pandas as pd
 import streamlit as st
-import psycopg2
-import psycopg2.extras
+from supabase import create_client, Client
+
+# Valeurs par defaut (fallback si secrets non disponibles)
+_DEFAULT_URL = "https://dimjiazzuqqqhgfzsmxe.supabase.co"
+_DEFAULT_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRpbWppYXp6dXFxcWhnZnpzbXhlIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTE2NzI1MCwiZXhwIjoyMDkwNzQzMjUwfQ.eyL7zAenxCOsBTILQxdZfXcoZsHEBGT4aXJAYTa75is"
 
 @st.cache_resource
-def _get_dsn() -> str:
-    """Retourne la chaine de connexion DSN complete."""
-    db_url = ""
+def _get_client() -> Client:
     try:
-        db_url = st.secrets.get("DATABASE_URL", "")
+        url = st.secrets.get("SUPABASE_URL", _DEFAULT_URL)
+        key = st.secrets.get("SUPABASE_SERVICE_KEY", _DEFAULT_KEY)
     except Exception:
-        pass
-    if not db_url:
-        db_url = os.environ.get("DATABASE_URL", "")
-    if db_url:
-        db_url = db_url.replace("\n", "").replace("\r", "").strip()
-        if db_url:
-            return db_url
-    # Fallback direct
-    return "postgresql://postgres.dimjiazzuqqqhgfzsmxe:OdifSalam2024@aws-0-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
+        url = os.environ.get("SUPABASE_URL", _DEFAULT_URL)
+        key = os.environ.get("SUPABASE_SERVICE_KEY", _DEFAULT_KEY)
+    return create_client(url, key)
 
-def get_conn():
-    dsn = _get_dsn()
-    try:
-        return psycopg2.connect(dsn, connect_timeout=30)
-    except psycopg2.OperationalError as e:
-        msg = str(e)
-        if "Circuit breaker" in msg:
-            st.error("Supabase a temporairement bloque les connexions. Attendez 5-10 minutes puis rechargez.")
+def _fmt(sql: str, params) -> str:
+    """Remplace les %s par les valeurs correctement echappees."""
+    if not params:
+        return sql
+    result = []
+    param_iter = iter(params)
+    i = 0
+    while i < len(sql):
+        if sql[i] == '%' and i + 1 < len(sql) and sql[i+1] == 's':
+            try:
+                val = next(param_iter)
+                if val is None:
+                    result.append('NULL')
+                elif isinstance(val, bool):
+                    result.append('TRUE' if val else 'FALSE')
+                elif isinstance(val, (int, float)):
+                    result.append(str(val))
+                else:
+                    result.append("'" + str(val).replace("'", "''") + "'")
+            except StopIteration:
+                result.append('%s')
+            i += 2
         else:
-            # Masquer le mot de passe dans l'affichage
-            safe = re.sub(r':([^@]+)@', ':***@', dsn)
-            st.error(f"Erreur connexion Supabase : {e}")
-            st.info(f"DSN : {safe}")
-        raise
-
-def release_conn(conn):
-    try:
-        conn.close()
-    except Exception:
-        pass
+            result.append(sql[i])
+            i += 1
+    return ''.join(result)
 
 def qdf(sql: str, p=None) -> pd.DataFrame:
-    conn = get_conn()
+    """Execute une SELECT et retourne un DataFrame."""
+    client = _get_client()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, p or ())
-            rows = cur.fetchall()
-        return pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
+        formatted = _fmt(sql, p)
+        result = client.rpc("odifsalam_query", {"q": formatted}).execute()
+        data = result.data
+        if data and isinstance(data, list):
+            return pd.DataFrame(data)
+        return pd.DataFrame()
     except Exception as e:
         print(f"[qdf] {e}")
-        try: conn.rollback()
-        except Exception: pass
         return pd.DataFrame()
-    finally:
-        release_conn(conn)
 
 def exsql(sql: str, p=None):
+    """Execute INSERT/UPDATE/DELETE. Retourne l'id si INSERT."""
+    client = _get_client()
     is_insert = sql.strip().upper().startswith("INSERT")
-    full_sql = sql if not is_insert or "RETURNING" in sql.upper() else sql + " RETURNING id"
-    conn = get_conn()
+    if is_insert and "RETURNING" not in sql.upper():
+        sql = sql + " RETURNING id"
     try:
-        with conn.cursor() as cur:
-            cur.execute(full_sql, p or ())
-            conn.commit()
-            if is_insert:
-                row = cur.fetchone()
-                return row[0] if row else None
+        formatted = _fmt(sql, p)
+        result = client.rpc("odifsalam_exec", {"q": formatted}).execute()
+        if is_insert and result.data:
+            data = result.data
+            if isinstance(data, list) and len(data) > 0:
+                return data[0].get('id')
+            elif isinstance(data, dict):
+                return data.get('id')
         return None
     except Exception as e:
         print(f"[exsql] {e}")
-        try: conn.rollback()
-        except Exception: pass
         raise
-    finally:
-        release_conn(conn)
 
 def exmany(sql: str, rows):
-    conn = get_conn()
+    """Execute une requete sur plusieurs lignes."""
+    client = _get_client()
     try:
-        with conn.cursor() as cur:
-            cur.executemany(sql, rows)
-        conn.commit()
+        for row in rows:
+            formatted = _fmt(sql, row)
+            client.rpc("odifsalam_exec", {"q": formatted}).execute()
     except Exception as e:
         print(f"[exmany] {e}")
-        try: conn.rollback()
-        except Exception: pass
         raise
-    finally:
-        release_conn(conn)
+
+def get_conn():
+    raise NotImplementedError("Utilisez qdf/exsql/exmany avec supabase-py")
+
+def release_conn(conn):
+    pass
 
 def init_db():
+    """Cree les tables si elles n'existent pas et verifie la connexion."""
+    client = _get_client()
     ddl_statements = [
         "CREATE TABLE IF NOT EXISTS dossiers (id SERIAL PRIMARY KEY, nom TEXT NOT NULL UNIQUE, description TEXT DEFAULT '', client TEXT DEFAULT '', date_creation TEXT DEFAULT '', statut TEXT DEFAULT 'En cours', observation TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS rues (id SERIAL PRIMARY KEY, dossier_id INTEGER REFERENCES dossiers(id) ON DELETE SET NULL, nom TEXT NOT NULL, zone TEXT DEFAULT '', longueur_m REAL DEFAULT 0, largeur_m REAL DEFAULT 0, observation TEXT DEFAULT '', numero_marche TEXT DEFAULT '', objet_marche TEXT DEFAULT '', maitre_ouvrage TEXT DEFAULT '', maitre_ouvrage_delegue TEXT DEFAULT '', entreprise TEXT DEFAULT '', bureau_controle TEXT DEFAULT '', labo TEXT DEFAULT '', coordinateur_securite TEXT DEFAULT '', date_notification TEXT DEFAULT '', date_demarrage TEXT DEFAULT '', delai_jours REAL DEFAULT 0, delai_mois REAL DEFAULT 0, statut_chantier TEXT DEFAULT 'En cours')",
@@ -125,19 +130,12 @@ def init_db():
         "CREATE TABLE IF NOT EXISTS audit_trail (id SERIAL PRIMARY KEY, date_action TEXT NOT NULL, table_concernee TEXT NOT NULL, action TEXT NOT NULL, enregistrement_id INTEGER, details TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS audit_log (id SERIAL PRIMARY KEY, timestamp TEXT NOT NULL, table_name TEXT NOT NULL, action TEXT NOT NULL, record_id INTEGER, details TEXT DEFAULT '')",
     ]
-    conn = get_conn()
     try:
-        with conn.cursor() as cur:
-            for ddl in ddl_statements:
-                cur.execute(ddl)
-        conn.commit()
-        print("[init_db] Tables OK")
+        for ddl in ddl_statements:
+            client.rpc("odifsalam_exec", {"q": ddl}).execute()
+        # Verification connexion
+        client.rpc("odifsalam_query", {"q": "SELECT 1 as ok"}).execute()
+        print("[init_db] OK - Supabase REST API connecte")
     except Exception as e:
-        st.error(f"init_db erreur : {e}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        st.error(f"Erreur init_db : {e}")
         raise
-    finally:
-        release_conn(conn)
