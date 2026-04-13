@@ -24,25 +24,33 @@ def _get_client() -> Client:
         key = os.environ.get("SUPABASE_SERVICE_KEY", _DEFAULT_KEY)
     return create_client(url, key)
 
+def _quote(val) -> str:
+    """Formate une valeur Python pour SQL."""
+    if val is None:
+        return 'NULL'
+    if isinstance(val, bool):
+        return 'TRUE' if val else 'FALSE'
+    if isinstance(val, (int, float)):
+        return str(val)
+    return "'" + str(val).replace("'", "''") + "'"
+
 def _fmt(sql: str, params) -> str:
-    """Remplace les %s par les valeurs correctement echappees."""
+    """Remplace les ? ou %s par les valeurs correctement echappees."""
     if not params:
         return sql
     result = []
     param_iter = iter(params)
     i = 0
     while i < len(sql):
-        if sql[i] == '%' and i + 1 < len(sql) and sql[i+1] == 's':
+        if sql[i] == '?' :
             try:
-                val = next(param_iter)
-                if val is None:
-                    result.append('NULL')
-                elif isinstance(val, bool):
-                    result.append('TRUE' if val else 'FALSE')
-                elif isinstance(val, (int, float)):
-                    result.append(str(val))
-                else:
-                    result.append("'" + str(val).replace("'", "''") + "'")
+                result.append(_quote(next(param_iter)))
+            except StopIteration:
+                result.append('?')
+            i += 1
+        elif sql[i] == '%' and i + 1 < len(sql) and sql[i+1] == 's':
+            try:
+                result.append(_quote(next(param_iter)))
             except StopIteration:
                 result.append('%s')
             i += 2
