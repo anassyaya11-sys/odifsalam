@@ -40,7 +40,7 @@ def _get_creds() -> dict:
         "user":     os.environ.get("DB_USER",     "postgres.dimjiazzuqqqhgfzsmxe"),
         "password": os.environ.get("DB_PASSWORD", "OdifSalam2024"),
         "host":     os.environ.get("DB_HOST",     "aws-0-eu-west-1.pooler.supabase.com"),
-        "port":     int(os.environ.get("DB_PORT", "6543")),
+        "port":     int(os.environ.get("DB_PORT", "5432")),
         "dbname":   os.environ.get("DB_NAME",     "postgres"),
         "sslmode":  "require",
     }
