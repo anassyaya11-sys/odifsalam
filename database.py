@@ -178,3 +178,14 @@ def init_db():
         with conn.cursor() as cur:
             for ddl in ddl_statements:
                 cur.execute(ddl)
+        conn.commit()
+        print("[init_db] Tables OK")
+    except Exception as e:
+        st.error(f"init_db erreur : {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        release_conn(conn)
