@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 ODIFSALAM — Couche d'accès données PostgreSQL/Supabase
-psycopg2 avec paramètres explicites (pas de parsing URL).
+Stratégie : connexions directes psycopg2 (pas de ThreadedConnectionPool)
+             + Session Pooler Supabase port 5432 (évite le circuit breaker PgBouncer)
 Python 3.12 requis (voir runtime.txt).
 """
 
@@ -10,12 +11,16 @@ import re
 import pandas as pd
 import streamlit as st
 import psycopg2
-import psycopg2.pool
 import psycopg2.extras
 
 # ── CREDENTIALS ─────────────────────────────────────────────────────────────
-def _get_creds():
-    """Extrait les credentials depuis DATABASE_URL ou variables d'env."""
+@st.cache_resource
+def _get_creds() -> dict:
+    """
+    Extrait les credentials une seule fois (mis en cache).
+    Priorité : st.secrets > DATABASE_URL env > fallback hardcodé.
+    Port 5432 = Session Pooler Supabase (pas de circuit breaker PgBouncer).
+    """
     db_url = ""
     try:
         db_url = st.secrets.get("DATABASE_URL", "")
@@ -34,43 +39,31 @@ def _get_creds():
                 "user":     m.group(1),
                 "password": m.group(2),
                 "host":     m.group(3),
-                "port":     int(m.group(4) or 6543),
+                # Forcer port 5432 (Session Pooler) même si l'URL contient 6543
+                "port":     5432,
                 "dbname":   m.group(5),
                 "sslmode":  "require",
             }
 
-    # Fallback hardcodé (Transaction Pooler Supabase)
+    # Fallback — Session Pooler port 5432
     return {
         "user":     os.environ.get("DB_USER",     "postgres.dimjiazzuqqqhgfzsmxe"),
         "password": os.environ.get("DB_PASSWORD", "gUpmS3uGgNEfymaQ"),
         "host":     os.environ.get("DB_HOST",     "aws-0-eu-west-1.pooler.supabase.com"),
-        "port":     int(os.environ.get("DB_PORT", "6543")),
+        "port":     5432,   # Session Pooler — PAS 6543 (Transaction Pooler/PgBouncer)
         "dbname":   os.environ.get("DB_NAME",     "postgres"),
         "sslmode":  "require",
     }
 
-# ── CONNEXION UNIQUE (pas de pool — évite les problèmes PgBouncer) ─────────
-def _new_conn():
-    """Ouvre une connexion psycopg2 avec kwargs explicites."""
-    c = _get_creds()
-    return psycopg2.connect(
-        host=c["host"],
-        port=c["port"],
-        dbname=c["dbname"],
-        user=c["user"],
-        password=c["password"],
-        sslmode=c["sslmode"],
-        connect_timeout=15,
-    )
-
-# ── POOL LÉGER VIA st.cache_resource ─────────────────────────────────────
-@st.cache_resource
-def _get_pool():
-    """Retourne un pool ThreadedConnectionPool (minconn=1, maxconn=5)."""
+# ── CONNEXION DIRECTE (pas de pool — connexion par opération) ────────────────
+def get_conn():
+    """
+    Ouvre une connexion psycopg2 fraîche via Session Pooler (port 5432).
+    Pas de ThreadedConnectionPool : Supabase gère le pooling côté serveur.
+    """
     c = _get_creds()
     try:
-        pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=1, maxconn=5,
+        return psycopg2.connect(
             host=c["host"],
             port=c["port"],
             dbname=c["dbname"],
@@ -79,25 +72,28 @@ def _get_pool():
             sslmode=c["sslmode"],
             connect_timeout=15,
         )
-        return pool
-    except Exception as e:
-        # Afficher l'erreur réelle dans l'UI Streamlit
-        st.error(f"🔴 Erreur connexion Supabase : {e}")
-        st.info(f"Paramètres : host={c['host']} port={c['port']} user={c['user']} db={c['dbname']}")
+    except psycopg2.OperationalError as e:
+        msg = str(e)
+        if "Circuit breaker" in msg:
+            st.error(
+                "🔴 Supabase a temporairement bloqué les connexions (trop de tentatives échouées).\n\n"
+                "⏳ **Attendez 5-10 minutes** puis rechargez la page. Le disjoncteur se réinitialise automatiquement."
+            )
+        else:
+            st.error(f"🔴 Erreur connexion Supabase : {e}")
+            st.info(f"Paramètres : host={c['host']} port={c['port']} user={c['user']} db={c['dbname']}")
         raise
 
-def get_conn():
-    return _get_pool().getconn()
-
 def release_conn(conn):
+    """Ferme la connexion proprement."""
     try:
-        _get_pool().putconn(conn)
+        conn.close()
     except Exception:
-        try: conn.close()
-        except Exception: pass
+        pass
 
 # ── FONCTIONS D'ACCÈS AUX DONNÉES ───────────────────────────────────────────
 def qdf(sql: str, p=None) -> pd.DataFrame:
+    """Exécute une SELECT et retourne un DataFrame."""
     conn = get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -113,6 +109,7 @@ def qdf(sql: str, p=None) -> pd.DataFrame:
         release_conn(conn)
 
 def exsql(sql: str, p=None):
+    """Exécute INSERT/UPDATE/DELETE. Retourne l'id si INSERT."""
     is_insert = sql.strip().upper().startswith("INSERT")
     full_sql = sql if not is_insert or "RETURNING" in sql.upper() else sql + " RETURNING id"
     conn = get_conn()
@@ -133,6 +130,7 @@ def exsql(sql: str, p=None):
         release_conn(conn)
 
 def exmany(sql: str, rows):
+    """Exécute une requête sur plusieurs lignes."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -180,7 +178,7 @@ def init_db():
             for ddl in ddl_statements:
                 cur.execute(ddl)
         conn.commit()
-        print("[init_db] ✅ OK")
+        print("[init_db] ✅ Tables OK")
     except Exception as e:
         st.error(f"🔴 init_db erreur : {e}")
         try: conn.rollback()
