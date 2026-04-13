@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ODIFSALAM - Couche acces donnees PostgreSQL/Supabase
-Connexions directes psycopg2 + Transaction Pooler port 6543
+Connexions directes psycopg2 via URL DSN
 Python 3.12 requis.
 """
 
@@ -13,7 +13,8 @@ import psycopg2
 import psycopg2.extras
 
 @st.cache_resource
-def _get_creds() -> dict:
+def _get_dsn() -> str:
+    """Retourne la chaine de connexion DSN complete."""
     db_url = ""
     try:
         db_url = st.secrets.get("DATABASE_URL", "")
@@ -23,51 +24,24 @@ def _get_creds() -> dict:
         db_url = os.environ.get("DATABASE_URL", "")
     if db_url:
         db_url = db_url.replace("\n", "").replace("\r", "").strip()
-        m = re.match(
-            r'postgres(?:ql)?(?:\+\w+)?://([^:@]+):([^@]+)@([^:/]+):?(\d+)?/([^?#]+)',
-            db_url
-        )
-        if m:
-            return {
-                "user":     m.group(1),
-                "password": m.group(2),
-                "host":     m.group(3),
-                "port":     int(m.group(4) or 6543),
-                "dbname":   m.group(5),
-                "sslmode":  "require",
-            }
-    return {
-        "user":     os.environ.get("DB_USER",     "postgres.dimjiazzuqqqhgfzsmxe"),
-        "password": os.environ.get("DB_PASSWORD", "OdifSalam2024"),
-        "host":     os.environ.get("DB_HOST",     "aws-0-eu-west-1.pooler.supabase.com"),
-        "port":     int(os.environ.get("DB_PORT", "5432")),
-        "dbname":   os.environ.get("DB_NAME",     "postgres"),
-        "sslmode":  "require",
-    }
+        if db_url:
+            return db_url
+    # Fallback direct
+    return "postgresql://postgres.dimjiazzuqqqhgfzsmxe:OdifSalam2024@aws-0-eu-west-1.pooler.supabase.com:6543/postgres?sslmode=require"
 
 def get_conn():
-    c = _get_creds()
+    dsn = _get_dsn()
     try:
-        return psycopg2.connect(
-            host=c["host"],
-            port=c["port"],
-            dbname=c["dbname"],
-            user=c["user"],
-            password=c["password"],
-            sslmode=c["sslmode"],
-            connect_timeout=30,
-            keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=10,
-            keepalives_count=5,
-        )
+        return psycopg2.connect(dsn, connect_timeout=30)
     except psycopg2.OperationalError as e:
         msg = str(e)
         if "Circuit breaker" in msg:
             st.error("Supabase a temporairement bloque les connexions. Attendez 5-10 minutes puis rechargez.")
         else:
+            # Masquer le mot de passe dans l'affichage
+            safe = re.sub(r':([^@]+)@', ':***@', dsn)
             st.error(f"Erreur connexion Supabase : {e}")
-            st.info(f"Parametres : host={c['host']} port={c['port']} user={c['user']} db={c['dbname']}")
+            st.info(f"DSN : {safe}")
         raise
 
 def release_conn(conn):
