@@ -64,7 +64,20 @@ div[data-testid="metric-container"]{background:#f8f9fa;border:1px solid #dee2e6;
 </style>""", unsafe_allow_html=True)
 
 # ── INITIALISATION BASE DE DONNÉES ────────────────────────────
-init_db()
+try:
+    init_db()
+except Exception as _db_err:
+    _msg = str(_db_err)
+    if "Circuit breaker" in _msg:
+        st.error("🔴 Supabase a temporairement bloqué les connexions (trop de tentatives échouées).")
+        st.warning("⏳ **Attendez 2-3 minutes** puis cliquez sur le bouton ci-dessous pour réessayer.")
+    else:
+        st.error(f"🔴 Impossible de se connecter à la base de données : {_msg}")
+        st.warning("⏳ Cliquez sur le bouton ci-dessous pour réessayer dans quelques instants.")
+    if st.button("🔄 Réessayer la connexion"):
+        st.cache_resource.clear()
+        st.rerun()
+    st.stop()
 
 # ── UTILS ─────────────────────────────────────────────────────
 def audit(table,action,rid=None,det=""):
