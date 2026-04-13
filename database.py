@@ -39,8 +39,7 @@ def _get_creds() -> dict:
                 "user":     m.group(1),
                 "password": m.group(2),
                 "host":     m.group(3),
-                # Forcer port 5432 (Session Pooler) même si l'URL contient 6543
-                "port":     5432,
+                "port":     int(m.group(4) or 6543),  # Utiliser le port de l'URL
                 "dbname":   m.group(5),
                 "sslmode":  "require",
             }
@@ -50,7 +49,7 @@ def _get_creds() -> dict:
         "user":     os.environ.get("DB_USER",     "postgres.dimjiazzuqqqhgfzsmxe"),
         "password": os.environ.get("DB_PASSWORD", "gUpmS3uGgNEfymaQ"),
         "host":     os.environ.get("DB_HOST",     "aws-0-eu-west-1.pooler.supabase.com"),
-        "port":     5432,   # Session Pooler — PAS 6543 (Transaction Pooler/PgBouncer)
+        "port":     int(os.environ.get("DB_PORT", "6543")),  # Transaction Pooler
         "dbname":   os.environ.get("DB_NAME",     "postgres"),
         "sslmode":  "require",
     }
