@@ -2,7 +2,7 @@
 """
 ODIFSALAM — Couche d'accès données PostgreSQL/Supabase
 Stratégie : connexions directes psycopg2 (pas de ThreadedConnectionPool)
-             + Session Pooler Supabase port 5432 (évite le circuit breaker PgBouncer)
+             + Transaction Pooler Supabase port 6543
 Python 3.12 requis (voir runtime.txt).
 """
 
@@ -19,7 +19,7 @@ def _get_creds() -> dict:
     """
     Extrait les credentials une seule fois (mis en cache).
     Priorité : st.secrets > DATABASE_URL env > fallback hardcodé.
-    Port 5432 = Session Pooler Supabase (pas de circuit breaker PgBouncer).
+    Port 6543 = Transaction Pooler Supabase.
     """
     db_url = ""
     try:
@@ -30,6 +30,8 @@ def _get_creds() -> dict:
         db_url = os.environ.get("DATABASE_URL", "")
 
     if db_url:
+        # Nettoyer les sauts de ligne éventuels
+        db_url = db_url.replace("\n", "").replace("\r", "").strip()
         m = re.match(
             r'postgres(?:ql)?(?:\+\w+)?://([^:@]+):([^@]+)@([^:/]+):?(\d+)?/([^?#]+)',
             db_url
@@ -39,7 +41,7 @@ def _get_creds() -> dict:
                 "user":     m.group(1),
                 "password": m.group(2),
                 "host":     m.group(3),
-                "port":     int(m.group(4) or 6543),  # Utiliser le port de l'URL
+                "port":     int(m.group(4) or 6543),
                 "dbname":   m.group(5),
                 "sslmode":  "require",
             }
@@ -49,7 +51,7 @@ def _get_creds() -> dict:
         "user":     os.environ.get("DB_USER",     "postgres.dimjiazzuqqqhgfzsmxe"),
         "password": os.environ.get("DB_PASSWORD", "EzqLBLeVG5Fg8seq"),
         "host":     os.environ.get("DB_HOST",     "aws-0-eu-west-1.pooler.supabase.com"),
-        "port":     int(os.environ.get("DB_PORT", "6543")),  # Transaction Pooler
+        "port":     int(os.environ.get("DB_PORT", "6543")),
         "dbname":   os.environ.get("DB_NAME",     "postgres"),
         "sslmode":  "require",
     }
@@ -57,7 +59,7 @@ def _get_creds() -> dict:
 # ── CONNEXION DIRECTE (pas de pool — connexion par opération) ────────────────
 def get_conn():
     """
-    Ouvre une connexion psycopg2 fraîche via Session Pooler (port 5432).
+    Ouvre une connexion psycopg2 fraîche via Transaction Pooler (port 6543).
     Pas de ThreadedConnectionPool : Supabase gère le pooling côté serveur.
     """
     c = _get_creds()
@@ -157,15 +159,15 @@ def init_db():
         "CREATE TABLE IF NOT EXISTS decomptes_st (id SERIAL PRIMARY KEY, st_id INTEGER NOT NULL REFERENCES sous_traitants(id), rue_id INTEGER REFERENCES rues(id), numero_decompte INTEGER DEFAULT 1, date_decompte TEXT NOT NULL, devis_st_id INTEGER REFERENCES devis_st(id), quantite_executee REAL DEFAULT 0, montant REAL DEFAULT 0, observation TEXT DEFAULT '', valide INTEGER DEFAULT 0)",
         "CREATE TABLE IF NOT EXISTS paiements_st (id SERIAL PRIMARY KEY, st_id INTEGER NOT NULL REFERENCES sous_traitants(id), rue_id INTEGER REFERENCES rues(id), date_paiement TEXT NOT NULL, montant REAL NOT NULL, reference TEXT DEFAULT '', mode_paiement TEXT DEFAULT 'Virement', observation TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS personnel (id SERIAL PRIMARY KEY, nom TEXT NOT NULL, prenom TEXT DEFAULT '', categorie TEXT NOT NULL, poste TEXT DEFAULT '', salaire_journalier REAL DEFAULT 0, telephone TEXT DEFAULT '', date_entree TEXT DEFAULT '', actif INTEGER DEFAULT 1, rue_id INTEGER REFERENCES rues(id), observation TEXT DEFAULT '')",
-        "CREATE TABLE IF NOT EXISTS pointage (id SERIAL PRIMARY KEY, date_pointage TEXT NOT NULL, personnel_id INTEGER NOT NULL REFERENCES personnel(id), rue_id INTEGER REFERENCES rues(id), statut TEXT NOT NULL DEFAULT 'Présent', heures_travaillees REAL DEFAULT 8, heures_normales REAL DEFAULT 8, heures_sup REAL DEFAULT 0, tache TEXT DEFAULT '', observation TEXT DEFAULT '')",
-        "CREATE TABLE IF NOT EXISTS materiaux (id SERIAL PRIMARY KEY, nom TEXT NOT NULL UNIQUE, unite TEXT NOT NULL, categorie TEXT DEFAULT 'Matériau', stock_initial REAL DEFAULT 0, seuil_alerte REAL DEFAULT 0, prix_unitaire REAL DEFAULT 0)",
-        "CREATE TABLE IF NOT EXISTS approvisionnements (id SERIAL PRIMARY KEY, date_besoin TEXT NOT NULL, rue_id INTEGER REFERENCES rues(id), materiau_id INTEGER REFERENCES materiaux(id), designation TEXT NOT NULL, unite TEXT NOT NULL, quantite_demandee REAL DEFAULT 0, prix_unitaire_estime REAL DEFAULT 0, demandeur TEXT DEFAULT '', motif TEXT DEFAULT '', statut TEXT DEFAULT 'Besoin exprimé', date_validation_cc TEXT DEFAULT '', validateur_cc TEXT DEFAULT '', numero_bc TEXT DEFAULT '', date_bc TEXT DEFAULT '', fournisseur TEXT DEFAULT '', date_reception TEXT DEFAULT '', quantite_recue REAL DEFAULT 0, bon_livraison TEXT DEFAULT '', date_mise_stock TEXT DEFAULT '', quantite_mise_stock REAL DEFAULT 0, prix_unitaire_reel REAL DEFAULT 0, observation TEXT DEFAULT '')",
+        "CREATE TABLE IF NOT EXISTS pointage (id SERIAL PRIMARY KEY, date_pointage TEXT NOT NULL, personnel_id INTEGER NOT NULL REFERENCES personnel(id), rue_id INTEGER REFERENCES rues(id), statut TEXT NOT NULL DEFAULT 'Present', heures_travaillees REAL DEFAULT 8, heures_normales REAL DEFAULT 8, heures_sup REAL DEFAULT 0, tache TEXT DEFAULT '', observation TEXT DEFAULT '')",
+        "CREATE TABLE IF NOT EXISTS materiaux (id SERIAL PRIMARY KEY, nom TEXT NOT NULL UNIQUE, unite TEXT NOT NULL, categorie TEXT DEFAULT 'Materiau', stock_initial REAL DEFAULT 0, seuil_alerte REAL DEFAULT 0, prix_unitaire REAL DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS approvisionnements (id SERIAL PRIMARY KEY, date_besoin TEXT NOT NULL, rue_id INTEGER REFERENCES rues(id), materiau_id INTEGER REFERENCES materiaux(id), designation TEXT NOT NULL, unite TEXT NOT NULL, quantite_demandee REAL DEFAULT 0, prix_unitaire_estime REAL DEFAULT 0, demandeur TEXT DEFAULT '', motif TEXT DEFAULT '', statut TEXT DEFAULT 'Besoin exprime', date_validation_cc TEXT DEFAULT '', validateur_cc TEXT DEFAULT '', numero_bc TEXT DEFAULT '', date_bc TEXT DEFAULT '', fournisseur TEXT DEFAULT '', date_reception TEXT DEFAULT '', quantite_recue REAL DEFAULT 0, bon_livraison TEXT DEFAULT '', date_mise_stock TEXT DEFAULT '', quantite_mise_stock REAL DEFAULT 0, prix_unitaire_reel REAL DEFAULT 0, observation TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS mouvements_materiaux (id SERIAL PRIMARY KEY, date_mvt TEXT NOT NULL, rue_id INTEGER REFERENCES rues(id), materiau_id INTEGER NOT NULL REFERENCES materiaux(id), type_mvt TEXT NOT NULL, quantite REAL NOT NULL, prix_unitaire REAL DEFAULT 0, fournisseur TEXT DEFAULT '', bon_livraison TEXT DEFAULT '', appro_id INTEGER, observation TEXT DEFAULT '')",
-        "CREATE TABLE IF NOT EXISTS materiels (id SERIAL PRIMARY KEY, nom TEXT NOT NULL UNIQUE, type_materiel TEXT DEFAULT '', immatriculation TEXT DEFAULT '', marque TEXT DEFAULT '', annee INTEGER DEFAULT 0, cout_horaire REAL DEFAULT 0, cout_journalier REAL DEFAULT 0, statut TEXT DEFAULT 'Disponible', etat TEXT DEFAULT 'Opérationnel', rue_id_affectation INTEGER REFERENCES rues(id), date_acquisition TEXT DEFAULT '', date_derniere_maintenance TEXT DEFAULT '', prochain_entretien_heures REAL DEFAULT 0, heures_totales REAL DEFAULT 0, heure_compteur REAL DEFAULT 0, observation TEXT DEFAULT '', observations TEXT DEFAULT '')",
+        "CREATE TABLE IF NOT EXISTS materiels (id SERIAL PRIMARY KEY, nom TEXT NOT NULL UNIQUE, type_materiel TEXT DEFAULT '', immatriculation TEXT DEFAULT '', marque TEXT DEFAULT '', annee INTEGER DEFAULT 0, cout_horaire REAL DEFAULT 0, cout_journalier REAL DEFAULT 0, statut TEXT DEFAULT 'Disponible', etat TEXT DEFAULT 'Operationnel', rue_id_affectation INTEGER REFERENCES rues(id), date_acquisition TEXT DEFAULT '', date_derniere_maintenance TEXT DEFAULT '', prochain_entretien_heures REAL DEFAULT 0, heures_totales REAL DEFAULT 0, heure_compteur REAL DEFAULT 0, observation TEXT DEFAULT '', observations TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS suivi_materiels (id SERIAL PRIMARY KEY, date_suivi TEXT NOT NULL, rue_id INTEGER REFERENCES rues(id), materiel_id INTEGER NOT NULL REFERENCES materiels(id), heures_marche REAL DEFAULT 0, heures_arret REAL DEFAULT 0, heures_travail REAL DEFAULT 0, carburant_materiau_id INTEGER REFERENCES materiaux(id), carburant_l REAL DEFAULT 0, carburant_consomme REAL DEFAULT 0, cout_carburant REAL DEFAULT 0, chauffeur TEXT DEFAULT '', kilometre_debut REAL DEFAULT 0, kilometre_fin REAL DEFAULT 0, panne TEXT DEFAULT '', observation TEXT DEFAULT '', observations TEXT DEFAULT '')",
-        "CREATE TABLE IF NOT EXISTS maintenance_materiels (id SERIAL PRIMARY KEY, materiel_id INTEGER NOT NULL REFERENCES materiels(id), date_maintenance TEXT NOT NULL, type_maintenance TEXT DEFAULT 'Préventive', description TEXT NOT NULL, cout REAL DEFAULT 0, prestataire TEXT DEFAULT '', pieces_changees TEXT DEFAULT '', heures_compteur REAL DEFAULT 0, prochain_entretien_h REAL DEFAULT 0, observation TEXT DEFAULT '')",
+        "CREATE TABLE IF NOT EXISTS maintenance_materiels (id SERIAL PRIMARY KEY, materiel_id INTEGER NOT NULL REFERENCES materiels(id), date_maintenance TEXT NOT NULL, type_maintenance TEXT DEFAULT 'Preventive', description TEXT NOT NULL, cout REAL DEFAULT 0, prestataire TEXT DEFAULT '', pieces_changees TEXT DEFAULT '', heures_compteur REAL DEFAULT 0, prochain_entretien_h REAL DEFAULT 0, observation TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS journal_chantier (id SERIAL PRIMARY KEY, date_journal TEXT NOT NULL, rue_id INTEGER REFERENCES rues(id), meteo TEXT DEFAULT '', temperature REAL DEFAULT 20, nb_ouvriers_presents INTEGER DEFAULT 0, nb_ouvriers INTEGER DEFAULT 0, nb_encadrants INTEGER DEFAULT 0, travaux_executes TEXT DEFAULT '', travaux_realises TEXT DEFAULT '', problemes TEXT DEFAULT '', decisions TEXT DEFAULT '', visiteurs TEXT DEFAULT '', redacteur TEXT DEFAULT '', observation TEXT DEFAULT '', observations TEXT DEFAULT '')",
-        "CREATE TABLE IF NOT EXISTS caisse_chantier (id SERIAL PRIMARY KEY, date_op TEXT NOT NULL, categorie TEXT DEFAULT 'CHANTIER', rue_id INTEGER REFERENCES rues(id), type_op TEXT NOT NULL, rubrique TEXT NOT NULL, montant REAL NOT NULL, beneficiaire TEXT DEFAULT '', reference_piece TEXT DEFAULT '', mode_paiement TEXT DEFAULT 'Espèces', valide INTEGER DEFAULT 0, observation TEXT DEFAULT '', observations TEXT DEFAULT '')",
+        "CREATE TABLE IF NOT EXISTS caisse_chantier (id SERIAL PRIMARY KEY, date_op TEXT NOT NULL, categorie TEXT DEFAULT 'CHANTIER', rue_id INTEGER REFERENCES rues(id), type_op TEXT NOT NULL, rubrique TEXT NOT NULL, montant REAL NOT NULL, beneficiaire TEXT DEFAULT '', reference_piece TEXT DEFAULT '', mode_paiement TEXT DEFAULT 'Especes', valide INTEGER DEFAULT 0, observation TEXT DEFAULT '', observations TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS courriers (id SERIAL PRIMARY KEY, date_courrier TEXT NOT NULL, rue_id INTEGER REFERENCES rues(id), type_courrier TEXT NOT NULL DEFAULT 'Entrant', sens TEXT DEFAULT '', reference TEXT DEFAULT '', objet TEXT NOT NULL, expediteur_destinataire TEXT DEFAULT '', expediteur TEXT DEFAULT '', destinataire TEXT DEFAULT '', priorite TEXT DEFAULT 'Normale', resume TEXT DEFAULT '', actions_requises TEXT DEFAULT '', statut TEXT DEFAULT 'En cours', observation TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS incidents (id SERIAL PRIMARY KEY, date_incident TEXT NOT NULL, rue_id INTEGER REFERENCES rues(id), type_incident TEXT NOT NULL, gravite TEXT DEFAULT 'Mineur', description TEXT NOT NULL, personne_concernee TEXT DEFAULT '', mesures_prises TEXT DEFAULT '', nb_victimes INTEGER DEFAULT 0, cout_estime REAL DEFAULT 0, actions_correctives TEXT DEFAULT '', statut TEXT DEFAULT 'Ouvert', cloture INTEGER DEFAULT 0, observation TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS audit_trail (id SERIAL PRIMARY KEY, date_action TEXT NOT NULL, table_concernee TEXT NOT NULL, action TEXT NOT NULL, enregistrement_id INTEGER, details TEXT DEFAULT '')",
@@ -177,11 +179,13 @@ def init_db():
             for ddl in ddl_statements:
                 cur.execute(ddl)
         conn.commit()
-        print("[init_db] ✅ Tables OK")
+        print("[init_db] Tables OK")
     except Exception as e:
         st.error(f"🔴 init_db erreur : {e}")
-        try: conn.rollback()
-        except Exception: pass
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         raise
     finally:
         release_conn(conn)
