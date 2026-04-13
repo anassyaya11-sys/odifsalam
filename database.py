@@ -49,7 +49,7 @@ def _get_creds() -> dict:
     # Fallback — Transaction Pooler port 6543
     return {
         "user":     os.environ.get("DB_USER",     "postgres.dimjiazzuqqqhgfzsmxe"),
-        "password": os.environ.get("DB_PASSWORD", "EzqLBLeVG5Fg8seq"),
+        "password": os.environ.get("DB_PASSWORD", "OdifSalam2024"),
         "host":     os.environ.get("DB_HOST",     "aws-0-eu-west-1.pooler.supabase.com"),
         "port":     int(os.environ.get("DB_PORT", "6543")),
         "dbname":   os.environ.get("DB_NAME",     "postgres"),
@@ -178,14 +178,3 @@ def init_db():
         with conn.cursor() as cur:
             for ddl in ddl_statements:
                 cur.execute(ddl)
-        conn.commit()
-        print("[init_db] Tables OK")
-    except Exception as e:
-        st.error(f"🔴 init_db erreur : {e}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        release_conn(conn)
