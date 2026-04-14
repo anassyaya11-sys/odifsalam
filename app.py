@@ -98,6 +98,13 @@ def to_xl(d):
         for n,df in d.items(): df.to_excel(w,sheet_name=str(n)[:31],index=False)
     out.seek(0); return out.getvalue()
 
+def _v(df, col, default=0):
+    """Accès sécurisé à df.iloc[0][col] — retourne default si DataFrame vide."""
+    if df is None or df.empty or col not in df.columns:
+        return default
+    val = df.iloc[0][col]
+    return val if val is not None else default
+
 def get_dos(): return qdf("SELECT * FROM dossiers ORDER BY nom")
 def get_rues(did=None):
     if did: return qdf("SELECT * FROM rues WHERE dossier_id=? ORDER BY nom",[did])
@@ -234,9 +241,9 @@ if page=="dashboard":
     _p_rid  = [rid_dash]         # paramètre correspondant
 
     if rid_dash:
-        nb_pres = int(qdf(
+        nb_pres = int(_v(qdf(
             f"SELECT COUNT(*) AS n FROM pointage WHERE date_pointage=? AND statut='Présent'{_w_rid}",
-            [today]+_p_rid).iloc[0]["n"] or 0)
+            [today]+_p_rid), "n"))
         caisse = qdf(
             f"SELECT COALESCE(SUM(CASE WHEN type_op='Recette' THEN montant ELSE 0 END),0) AS rec,"
             f"COALESCE(SUM(CASE WHEN type_op='Dépense' THEN montant ELSE 0 END),0) AS dep,"
@@ -248,13 +255,13 @@ if page=="dashboard":
             "FROM devis_rue d LEFT JOIN(SELECT devis_id,SUM(quantite_jour) AS qe "
             "FROM realisations_journalieres GROUP BY devis_id)q ON q.devis_id=d.id "
             "WHERE d.rue_id=?", _p_rid)
-        nb_inc = int(qdf(
+        nb_inc = int(_v(qdf(
             f"SELECT COUNT(*) AS n FROM incidents WHERE cloture=0{_w_rid}",
-            _p_rid).iloc[0]["n"] or 0)
+            _p_rid), "n"))
     else:
-        nb_pres = int(qdf(
+        nb_pres = int(_v(qdf(
             "SELECT COUNT(*) AS n FROM pointage WHERE date_pointage=? AND statut='Présent'",
-            [today]).iloc[0]["n"] or 0)
+            [today]), "n"))
         caisse = qdf(
             "SELECT COALESCE(SUM(CASE WHEN type_op='Recette' THEN montant ELSE 0 END),0) AS rec,"
             "COALESCE(SUM(CASE WHEN type_op='Dépense' THEN montant ELSE 0 END),0) AS dep,"
@@ -265,14 +272,14 @@ if page=="dashboard":
             "COALESCE(SUM(COALESCE(q.qe,0)*d.prix_unitaire),0) AS me "
             "FROM devis_rue d LEFT JOIN(SELECT devis_id,SUM(quantite_jour) AS qe "
             "FROM realisations_journalieres GROUP BY devis_id)q ON q.devis_id=d.id")
-        nb_inc = int(qdf("SELECT COUNT(*) AS n FROM incidents WHERE cloture=0").iloc[0]["n"] or 0)
+        nb_inc = int(_v(qdf("SELECT COUNT(*) AS n FROM incidents WHERE cloture=0"), "n"))
 
-    _rec=float(caisse.iloc[0]["rec"] or 0)
-    _dep=float(caisse.iloc[0]["dep"] or 0)
-    _avance=float(caisse.iloc[0]["avance"] or 0)
+    _rec=float(_v(caisse, "rec"))
+    _dep=float(_v(caisse, "dep"))
+    _avance=float(_v(caisse, "avance"))
     solde = _rec - _dep - _avance
-    mm=float(glo.iloc[0]["mm"] or 0); me=float(glo.iloc[0]["me"] or 0)
-    nb_app=int(qdf("SELECT COUNT(*) AS n FROM approvisionnements WHERE statut!='Mis en stock'").iloc[0]["n"] or 0)
+    mm=float(_v(glo, "mm")); me=float(_v(glo, "me"))
+    nb_app=int(_v(qdf("SELECT COUNT(*) AS n FROM approvisionnements WHERE statut!='Mis en stock'"), "n"))
 
     c1,c2,c3,c4,c5,c6=st.columns(6)
     c1.metric("📁 Dossiers",len(df_dos)); c2.metric("🗺️ Chantiers",len(df_rues)); c3.metric("👷 Présents",nb_pres)
@@ -336,7 +343,7 @@ elif page=="dossiers":
         df_d=get_dos()
         if not df_d.empty:
             for _,r in df_d.iterrows():
-                nb_ch=int(qdf("SELECT COUNT(*) AS n FROM rues WHERE dossier_id=?",[int(r["id"])]).iloc[0]["n"] or 0)
+                nb_ch=int(_v(qdf("SELECT COUNT(*) AS n FROM rues WHERE dossier_id=?",[int(r["id"])]), "n"))
                 st.markdown(f"**📁 {r['nom']}** — {r.get('client','—')} | {r.get('statut','—')} | {nb_ch} chantier(s)")
             st.dataframe(df_d,use_container_width=True)
 
@@ -906,7 +913,7 @@ elif page=="decompte":
             rows = []
             for _, p in df_d2.iterrows():
                 r2 = qdf("SELECT COALESCE(SUM(quantite_jour),0) AS qe FROM realisations_journalieres WHERE devis_id=?", [int(p["id"])])
-                qe = float(r2.iloc[0]["qe"] or 0); qm = float(p["quantite_marche"] or 0); pu = float(p["prix_unitaire"] or 0)
+                qe = float(_v(r2, "qe")); qm = float(p["quantite_marche"] or 0); pu = float(p["prix_unitaire"] or 0)
                 rows.append({
                     "Code": p.get("code_poste",""), "Désignation": p["designation"],
                     "Unité": p["unite"], "Qté marché": qm, "Qté exécutée": qe,
@@ -935,7 +942,7 @@ elif page=="decompte":
             te_r = 0.0
             for _, p in df_dv.iterrows():
                 r2 = qdf("SELECT COALESCE(SUM(quantite_jour),0) AS qe FROM realisations_journalieres WHERE devis_id=?", [int(p["id"])])
-                te_r += float(r2.iloc[0]["qe"] or 0) * float(p["prix_unitaire"] or 0)
+                te_r += float(_v(r2, "qe")) * float(p["prix_unitaire"] or 0)
             tm_total += tm_r; te_total += te_r
             rows_glob.append({
                 "Rue / Chantier": rue_row["nom"],
@@ -1151,7 +1158,7 @@ elif page=="decompte_st":
                 if "rue_nom" in p and pd.notna(p.get("rue_nom")) and str(p.get("rue_nom",""))!="": row_r["Rue"]=p["rue_nom"]
                 rows.append(row_r)
             df_r2=pd.DataFrame(rows); td_val=df_r2["Montant devis"].sum(); te=df_r2["Montant exécuté"].sum()
-            tp_val=float(qdf("SELECT COALESCE(SUM(montant),0) AS s FROM paiements_st WHERE st_id=?",[st_id]).iloc[0]["s"] or 0)
+            tp_val=float(_v(qdf("SELECT COALESCE(SUM(montant),0) AS s FROM paiements_st WHERE st_id=?",[st_id]), "s"))
             c1,c2,c3=st.columns(3); c1.metric("Montant devis ST",fmt(td_val)); c2.metric("Montant exécuté",fmt(te)); c3.metric("Solde à payer",fmt(te-tp_val))
             st.dataframe(df_r2,use_container_width=True)
             st.download_button("📥 Export",to_xl({"Décompte ST":df_r2}),f"dcst_{sel_s}.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -2541,7 +2548,7 @@ elif page=="maint":
             for _, e in df_em3.iterrows():
                 eid = int(e["id"])
                 r_m = qdf("SELECT COUNT(*) AS nb, COALESCE(SUM(cout),0) AS total_cout FROM maintenance_materiels WHERE materiel_id=?", [eid])
-                nb = int(r_m.iloc[0]["nb"] or 0); ct = float(r_m.iloc[0]["total_cout"] or 0)
+                nb = int(_v(r_m, "nb")); ct = float(_v(r_m, "total_cout"))
                 last = qdf("SELECT MAX(date_maintenance) AS last FROM maintenance_materiels WHERE materiel_id=?", [eid])
                 rows_eng.append({
                     "Engin": e["nom"],
@@ -2549,7 +2556,7 @@ elif page=="maint":
                     "État": str(e.get("etat") or "—"),
                     "Nb interventions": nb,
                     "Coût total maintenance": ct,
-                    "Dernière intervention": str(last.iloc[0]["last"] or "—")
+                    "Dernière intervention": str(_v(last, "last", "—"))
                 })
             df_recap_eng = pd.DataFrame(rows_eng)
             st.dataframe(df_recap_eng, use_container_width=True)
@@ -2559,4 +2566,3 @@ elif page=="maint":
 # ── FIN DE L'APPLICATION ─────────────────────────────────────────
 else:
     st.warning(f"Page inconnue : {page}")
-
