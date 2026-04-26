@@ -1345,11 +1345,41 @@ elif page=="appro":
             c2i.metric("Déjà reçu",f"{total_recu} {bc['unite']}")
             c3i.metric("Reste à recevoir",f"{reste} {bc['unite']}")
             st.progress(min(pct/100,1.0),text=f"{pct}% reçu")
-            # Historique
+            # Historique avec possibilité de supprimer
             if not df_recus.empty:
                 st.markdown("**📋 Historique des réceptions :**")
-                df_recus.columns=[c.lower() for c in df_recus.columns]
-                st.dataframe(df_recus,use_container_width=True)
+                df_recus_raw=qdf("SELECT id,date_reception,quantite_recue,bon_livraison,observation FROM receptions_appro WHERE appro_id=? ORDER BY date_reception",[aid])
+                if not df_recus_raw.empty:
+                    df_recus_raw.columns=[c.lower() for c in df_recus_raw.columns]
+                    for _,rec in df_recus_raw.iterrows():
+                        rid_rec=int(rec["id"])
+                        col_info,col_del=st.columns([5,1])
+                        col_info.markdown(f"📅 **{rec['date_reception']}** — {rec['quantite_recue']} {bc['unite']} | BL: {rec.get('bon_livraison','—') or '—'} | {rec.get('observation','') or ''}")
+                        if col_del.button("🗑️",key=f"del_rec_{rid_rec}",help="Supprimer cette réception"):
+                            exsql("DELETE FROM receptions_appro WHERE id=?",[rid_rec])
+                            # Recalcul du total
+                            new_total=float(_v(qdf("SELECT COALESCE(SUM(quantite_recue),0) AS s FROM receptions_appro WHERE appro_id=?",[aid]),"s"))
+                            exsql("UPDATE approvisionnements SET quantite_recue=? WHERE id=?",[new_total,aid])
+                            st.success("✅ Réception supprimée."); st.rerun()
+                    # Modification d'une réception
+                    with st.expander("✏️ Modifier une réception"):
+                        opts_rec=[f"{r['date_reception']} — {r['quantite_recue']} {bc['unite']}" for _,r in df_recus_raw.iterrows()]
+                        sel_r=st.selectbox("Réception à modifier",opts_rec,key=f"mod_rec_sel_{aid}")
+                        idx_r=opts_rec.index(sel_r)
+                        rec_sel=df_recus_raw.iloc[idx_r]
+                        with st.form(f"f_mod_rec_{aid}"):
+                            c1m,c2m,c3m=st.columns(3)
+                            try: vd=date.fromisoformat(str(rec_sel["date_reception"]))
+                            except: vd=date.today()
+                            dm=c1m.date_input("Date",value=vd,key=f"dm_{aid}")
+                            qm=c2m.number_input("Quantité",min_value=0.01,value=float(rec_sel["quantite_recue"] or 1),key=f"qm_{aid}")
+                            blm=c3m.text_input("N° BL",value=str(rec_sel.get("bon_livraison") or ""),key=f"blm_{aid}")
+                            obsm=st.text_input("Observation",value=str(rec_sel.get("observation") or ""),key=f"obsm_{aid}")
+                            if st.form_submit_button("✅ Enregistrer la modification"):
+                                exsql("UPDATE receptions_appro SET date_reception=?,quantite_recue=?,bon_livraison=?,observation=? WHERE id=?",[str(dm),qm,blm,obsm,int(rec_sel["id"])])
+                                new_total=float(_v(qdf("SELECT COALESCE(SUM(quantite_recue),0) AS s FROM receptions_appro WHERE appro_id=?",[aid]),"s"))
+                                exsql("UPDATE approvisionnements SET quantite_recue=? WHERE id=?",[new_total,aid])
+                                st.success("✅ Réception modifiée."); st.rerun()
             st.markdown("---")
             st.markdown("**➕ Nouvelle livraison partielle :**")
             with st.form("f_reception_partielle"):
@@ -2538,49 +2568,13 @@ elif page=="audit":
     if table_au: conditions_au.append(f"table_name LIKE '%{table_au}%'")
     if action_au!="Toutes": conditions_au.append(f"action='{action_au}'")
     where_au="WHERE "+" AND ".join(conditions_au)
-    df_au=qdf(f"SELECT timestamp AS Horodatage,table_name AS Table,action AS Action,record_id AS ID_Enreg,details AS Détails FROM audit_log {where_au} ORDER BY timestamp DESC LIMIT 500")
-    if df_au.empty: st.info("Aucun événement d'audit.")
-    else:
-        st.metric("Événements trouvés",len(df_au))
+    df_au=qdf(f"SELECT timestamp AS Horodatage,table_name AS Table,action AS Action,record_id AS ID,details AS Détails FROM audit_log {where_au} ORDER BY timestamp DESC LIMIT 500")
+    if not df_au.empty:
+        df_au.columns=[c.lower() for c in df_au.columns]
         st.dataframe(df_au,use_container_width=True)
-
-# ── MAINTENANCE ──────────────────────────────────────────────────
-elif page=="maint":
-    st.header("🔧 Maintenance des Engins")
-
-    def get_engins_maint():
-        return qdf("SELECT * FROM materiels ORDER BY nom")
-
-    t1, t2, t3 = st.tabs(["➕ Enregistrer intervention","📋 Historique","📊 Par engin"])
-
-    with t1:
-        df_em = get_engins_maint()
-        if df_em.empty:
-            st.warning("Aucun engin enregistré. Ajoutez des engins dans Matériels & Engins.")
-        else:
-            with st.form("f_maint_page"):
-                c1, c2 = st.columns(2)
-                eng_mp = c1.selectbox("Engin *", df_em["nom"].tolist(), key="mp_eng")
-                dm_p = c2.date_input("Date intervention", value=date.today(), key="mp_date")
-                c3, c4 = st.columns(2)
-                type_mp = c3.selectbox("Type d'intervention",
-                    ["Préventive","Corrective","Vidange","Réparation","Inspection","Autre"], key="mp_type")
-                cout_mp = c4.number_input("Coût intervention", min_value=0.0, key="mp_cout")
-                c5, c6 = st.columns(2)
-                prest_mp = c5.text_input("Prestataire", key="mp_prest")
-                pieces_mp = c6.text_input("Pièces changées", key="mp_pieces")
-                c7, c8 = st.columns(2)
-                hrs_mp = c7.number_input("Heures compteur", min_value=0.0, key="mp_hrs")
-                proch_mp = c8.number_input("Prochain entretien (h)", min_value=0.0, key="mp_proch")
-                desc_mp = st.text_area("Description de l'intervention *", height=100, key="mp_desc")
-                obs_mp = st.text_input("Observation", key="mp_obs")
-                if st.form_submit_button("💾 Enregistrer l'intervention"):
-                    if not desc_mp.strip(): st.error("Description obligatoire.")
-                    else:
-                        exsql("INSERT INTO maintenance_materiels(materiel_id,date_maintenance,type_maintenance,description,cout,prestataire,pieces_changees,heures_compteur,observation)VALUES(?,?,?,?,?,?,?,?,?)",
-                              [eid_mp,str(date_mp),type_mp,desc_mp,cout_mp,prest_mp,pieces_mp,hc_mp,obs_mp])
-                        exsql("UPDATE materiels SET date_derniere_maintenance=?,heure_compteur=? WHERE id=?",[str(date_mp),hc_mp,eid_mp])
-                        st.success("✅ Intervention enregistrée."); st.rerun()
+        st.download_button("📥 Export",to_xl({"Audit":df_au}),"audit.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    else:
+        st.info("Aucun enregistrement d'audit.")
 
 # ── FIN DE L'APPLICATION ─────────────────────────────────────────
 else:
