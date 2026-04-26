@@ -1740,8 +1740,10 @@ elif page=="journal":
             else:
                 st.dataframe(df_hebdo,use_container_width=True)
                 col_a,col_b=st.columns(2)
-                col_a.metric("Total ouvriers-jours",int(df_hebdo["Ouvriers"].sum()))
-                col_b.metric("Total encadrants-jours",int(df_hebdo["Encadrants"].sum()))
+                col_ouvr = next((c for c in df_hebdo.columns if c.lower()=="ouvriers"), None)
+                col_enc  = next((c for c in df_hebdo.columns if c.lower()=="encadrants"), None)
+                col_a.metric("Total ouvriers-jours",  int(df_hebdo[col_ouvr].sum()) if col_ouvr else 0)
+                col_b.metric("Total encadrants-jours", int(df_hebdo[col_enc].sum())  if col_enc  else 0)
 
     with t4:
         st.subheader("✏️ Modifier / Supprimer une entrée journal")
@@ -2232,13 +2234,11 @@ elif page=="rapports":
                         SELECT jc.date_journal AS Date,
                                COALESCE(r.nom,'—') AS Chantier,
                                jc.meteo AS Météo,
-                               jc.nb_ouvriers_presents AS Ouvriers,
-                               jc.travaux_executes AS Travaux_Exécutés,
-                               jc.problemes AS Problèmes,
-                               jc.decisions AS Décisions,
-                               jc.visiteurs AS Visiteurs,
-                               jc.redacteur AS Rédacteur,
-                               jc.observation AS Observation
+                               jc.temperature AS Température,
+                               jc.nb_ouvriers AS Ouvriers,
+                               jc.nb_encadrants AS Encadrants,
+                               jc.travaux_realises AS Travaux_Réalisés,
+                               jc.observations AS Observations
                         FROM journal_chantier jc
                         LEFT JOIN rues r ON r.id=jc.rue_id
                         WHERE jc.date_journal BETWEEN '{d_deb}' AND '{d_fin}'
