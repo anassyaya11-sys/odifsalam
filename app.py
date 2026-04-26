@@ -1699,9 +1699,14 @@ elif page=="journal":
                 obs_j1=st.text_area("Observations générales",height=60,key="jrn_saisie_obs")
                 if st.form_submit_button("💾 Enregistrer"):
                     rid_j1=id_map.get(ch_j1)
-                    contenu=f"TRAVAUX: {travaux_j1}\nINCIDENTS: {incidents_j1}\nLIVRAISONS: {livraisons_j1}\nVISITES: {visites_j1}\nOBS: {obs_j1}"
+                    parts=[]
+                    if incidents_j1.strip(): parts.append(f"INCIDENTS/SÉCURITÉ: {incidents_j1.strip()}")
+                    if livraisons_j1.strip(): parts.append(f"LIVRAISONS/RÉCEPTIONS: {livraisons_j1.strip()}")
+                    if visites_j1.strip(): parts.append(f"VISITES/RÉUNIONS: {visites_j1.strip()}")
+                    if obs_j1.strip(): parts.append(f"OBSERVATIONS: {obs_j1.strip()}")
+                    observations_full="\n".join(parts)
                     exsql("INSERT INTO journal_chantier(date_journal,rue_id,meteo,temperature,nb_ouvriers,nb_encadrants,travaux_realises,observations)VALUES(?,?,?,?,?,?,?,?)",
-                          [str(date_j1),rid_j1,meteo_j1,temp_j1,nb_ouvriers,nb_encad,travaux_j1,obs_j1])
+                          [str(date_j1),rid_j1,meteo_j1,temp_j1,nb_ouvriers,nb_encad,travaux_j1,observations_full])
                     st.success("✅ Entrée journal enregistrée."); st.rerun()
 
     with t2:
