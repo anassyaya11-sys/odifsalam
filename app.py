@@ -1318,12 +1318,19 @@ elif page=="appro":
     with t4:
         st.subheader("📦 Réception de livraison")
         st.caption("Sélectionnez le BC, saisissez la quantité reçue ce jour. Répétez pour chaque livraison partielle. Clôturez quand la livraison est terminée.")
-        df_bc_rec=qdf("SELECT a.id,a.designation,a.unite,a.quantite_demandee,a.fournisseur,a.numero_bc,a.rue_id,COALESCE(r.nom,'Général') AS ch FROM approvisionnements a LEFT JOIN rues r ON r.id=a.rue_id WHERE a.statut='Bon de commande émis' ORDER BY a.date_besoin DESC")
+        # Affiche les BCs "Bon de commande émis" ET les "Réceptionné" pas encore mis en stock (livraisons incomplètes)
+        df_bc_rec=qdf(
+            "SELECT a.id,a.designation,a.unite,a.quantite_demandee,a.quantite_recue,a.fournisseur,a.numero_bc,a.statut,a.rue_id,"
+            "a.materiau_id,a.prix_unitaire_estime,COALESCE(r.nom,'Général') AS ch "
+            "FROM approvisionnements a LEFT JOIN rues r ON r.id=a.rue_id "
+            "WHERE a.statut IN ('Bon de commande émis','Réceptionné') "
+            "AND a.statut != 'Mis en stock' "
+            "ORDER BY a.date_besoin DESC")
         if df_bc_rec.empty:
             st.info("ℹ️ Aucun bon de commande en attente de réception.")
         else:
             # Sélection du BC
-            df_bc_rec["label_bc"]=df_bc_rec.apply(lambda r:f"BC #{r['numero_bc'] or r['id']} — {r['designation']} | {r['fournisseur'] or '—'} | {r['ch']} | {r['quantite_demandee']} {r['unite']}",axis=1)
+            df_bc_rec["label_bc"]=df_bc_rec.apply(lambda r:f"{'🟡 En livraison' if r['statut']=='Bon de commande émis' else '🟠 Clôturé - en attente mise en stock'} | BC #{r['numero_bc'] or r['id']} — {r['designation']} | {r['fournisseur'] or '—'} | {r['ch']} | {r['quantite_demandee']} {r['unite']}",axis=1)
             sel_bc=st.selectbox("Sélectionner le Bon de Commande",df_bc_rec["label_bc"].tolist(),key="rec_bc_sel")
             bc=df_bc_rec[df_bc_rec["label_bc"]==sel_bc].iloc[0]
             aid=int(bc["id"]); qdem=float(bc["quantite_demandee"] or 0)
@@ -1360,9 +1367,13 @@ elif page=="appro":
                 audit("approvisionnements","UPDATE",aid,f"Réception partielle: {qrec} {bc['unite']} BL:{bl}")
                 st.success(f"✅ {qrec} {bc['unite']} réceptionnés. Total reçu : {total_recu+qrec}/{qdem} {bc['unite']}."); st.rerun()
             if cl_rec:
-                exsql("UPDATE approvisionnements SET statut='Réceptionné',quantite_recue=? WHERE id=?",[total_recu,aid])
-                audit("approvisionnements","UPDATE",aid,f"BC clôturé — total reçu: {total_recu}")
-                st.success("✅ BC clôturé. Passez à l'étape Mise en stock."); st.rerun()
+                # Marque comme Réceptionné (prêt pour mise en stock) — reste visible ici jusqu'à mise en stock
+                if bc.get("statut") != "Réceptionné":
+                    exsql("UPDATE approvisionnements SET statut='Réceptionné',quantite_recue=? WHERE id=?",[total_recu,aid])
+                    audit("approvisionnements","UPDATE",aid,f"Réception clôturée — total reçu: {total_recu}")
+                    st.success("✅ Réception clôturée. Allez dans l'onglet **Mise en stock** pour valider l'entrée en stock."); st.rerun()
+                else:
+                    st.info("ℹ️ Ce BC est déjà marqué 'Réceptionné'. Allez dans l'onglet **Mise en stock** pour finaliser.")
 
     with t5:
         st.subheader("📥 Mise en stock")
