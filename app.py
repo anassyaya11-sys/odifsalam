@@ -1435,15 +1435,16 @@ elif page=="stock":
                     exsql("INSERT INTO mouvements_materiaux(date_mvt,rue_id,materiau_id,type_mvt,quantite,observation)VALUES(?,?,?,?,?,?)",[str(ds),rid_s2,int(mr["id"]),"SORTIE",qs,obss]); st.success("✅ Sortie enregistrée."); st.rerun()
     with t4:
         st.subheader("✏️ Modifier / Supprimer un mouvement de stock")
-        df_mvt=qdf("SELECT mm.id,mm.date_mvt AS Date,mm.type_mvt AS Type,m.nom AS Matériau,mm.quantite AS Quantité,mm.prix_unitaire AS PU,COALESCE(r.nom,'—') AS Chantier,mm.fournisseur AS Fournisseur,mm.observation AS Observation FROM mouvements_materiaux mm JOIN materiaux m ON m.id=mm.materiau_id LEFT JOIN rues r ON r.id=mm.rue_id ORDER BY mm.date_mvt DESC LIMIT 200")
+        df_mvt=qdf("SELECT mm.id,mm.date_mvt AS date,mm.type_mvt AS type,m.nom AS materiau,mm.quantite AS quantite,mm.prix_unitaire AS pu,COALESCE(r.nom,'—') AS chantier,mm.fournisseur AS fournisseur,mm.observation AS observation FROM mouvements_materiaux mm JOIN materiaux m ON m.id=mm.materiau_id LEFT JOIN rues r ON r.id=mm.rue_id ORDER BY mm.date_mvt DESC LIMIT 200")
+        if not df_mvt.empty: df_mvt.columns=[c.lower() for c in df_mvt.columns]
         if df_mvt.empty: st.info("Aucun mouvement.")
         else:
-            df_mvt["label"]=df_mvt.apply(lambda r:f"{r['Date']} | {r['Type']} | {r['Matériau']} × {r['Quantité']} | {r['Chantier']}",axis=1)
+            df_mvt["label"]=df_mvt.apply(lambda r:f"{r['date']} | {r['type']} | {r['materiau']} × {r['quantite']} | {r['chantier']}",axis=1)
             sel_mv=st.selectbox("Mouvement à modifier",df_mvt["label"].tolist(),key="mvt_edit_sel"); mv=df_mvt[df_mvt["label"]==sel_mv].iloc[0]
             with st.form("f_mvt_edit"):
-                c1,c2=st.columns(2); eq=c1.number_input("Quantité",min_value=0.01,value=float(mv["Quantité"] or 1)); epu=c2.number_input("Prix unitaire",min_value=0.0,value=float(mv["PU"] or 0))
-                efn=st.text_input("Fournisseur",value=str(mv.get("Fournisseur") or ""))
-                eobs=st.text_area("Observation",value=str(mv.get("Observation") or ""),height=60)
+                c1,c2=st.columns(2); eq=c1.number_input("Quantité",min_value=0.01,value=float(mv["quantite"] or 1)); epu=c2.number_input("Prix unitaire",min_value=0.0,value=float(mv["pu"] or 0))
+                efn=st.text_input("Fournisseur",value=str(mv.get("fournisseur") or ""))
+                eobs=st.text_area("Observation",value=str(mv.get("observation") or ""),height=60)
                 ca,cb=st.columns(2); sv=ca.form_submit_button("✅ Enregistrer"); dl=cb.form_submit_button("🗑️ Supprimer")
             if sv:
                 exsql("UPDATE mouvements_materiaux SET quantite=?,prix_unitaire=?,fournisseur=?,observation=? WHERE id=?",[eq,epu,efn,eobs,int(mv["id"])]); st.success("✅ Modifié."); st.rerun()
@@ -2571,6 +2572,8 @@ elif page=="maint":
             st.metric("Coût total parc", fmt(df_recap_eng["Coût total maintenance"].sum()))
 
 
-# ── FIN DE L'APPLICATION ─────────────────────────────────────────
+
+
+# ── FIN DE L'APPLICATION ─────────────────────────────────────────────
 else:
     st.warning(f"Page inconnue : {page}")
