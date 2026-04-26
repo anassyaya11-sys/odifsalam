@@ -1316,46 +1316,53 @@ elif page=="appro":
                         audit("approvisionnements","UPDATE",int(a["id"]),f"BC: {nbc}"); st.success(f"BC {nbc} émis."); st.rerun()
 
     with t4:
-        st.subheader("📦 Réception de livraison — livraisons progressives")
+        st.subheader("📦 Réception de livraison — saisie progressive")
+        st.caption("Chaque livraison partielle est enregistrée et mise en stock immédiatement. Le BC reste ouvert jusqu'à clôture manuelle.")
         df_rec=qdf("SELECT a.*,COALESCE(r.nom,'Général') AS ch FROM approvisionnements a LEFT JOIN rues r ON r.id=a.rue_id WHERE a.statut='Bon de commande émis' ORDER BY a.date_besoin")
-        if df_rec.empty: st.success("✅ Aucune livraison en attente.")
+        if df_rec.empty:
+            st.success("✅ Aucune livraison en attente.")
         else:
             for _,a in df_rec.iterrows():
                 aid=int(a["id"]); qdem=float(a.get("quantite_demandee",0) or 0)
-                # Total déjà reçu pour ce BC
-                df_deja=qdf("SELECT COALESCE(SUM(quantite_recue),0) AS total FROM receptions_appro WHERE appro_id=?",[aid])
+                # Total déjà reçu via mouvements_materiaux liés à ce BC
+                df_deja=qdf("SELECT COALESCE(SUM(quantite),0) AS total FROM mouvements_materiaux WHERE appro_id=? AND type_mvt='ENTREE'",[aid])
                 total_recu=float(_v(df_deja,"total"))
-                reste=max(0, qdem - total_recu)
-                pct=min(100, round(total_recu/qdem*100,1)) if qdem else 0
-                label_exp=f"#{aid} — {a['designation']} | BC: {a.get('numero_bc','—')} | {a.get('fournisseur','—')} | Reçu: {total_recu}/{qdem} {a['unite']} ({pct}%)"
+                reste=max(0.0, qdem - total_recu)
+                pct=min(100.0, round(total_recu/qdem*100,1)) if qdem else 0.0
+                label_exp=f"#{aid} — {a['designation']} | BC: {a.get('numero_bc','—')} | {a.get('fournisseur','—')} | ✅ {total_recu}/{qdem} {a['unite']} ({pct}%)"
                 with st.expander(label_exp):
-                    # Historique des réceptions partielles
-                    df_hist=qdf("SELECT date_reception,quantite_recue,bon_livraison,observation FROM receptions_appro WHERE appro_id=? ORDER BY date_reception",[aid])
-                    if not df_hist.empty:
-                        st.markdown("**📋 Historique des réceptions :**")
-                        st.dataframe(df_hist, use_container_width=True)
                     # Barre de progression
-                    st.progress(pct/100, text=f"Reçu : **{total_recu} / {qdem} {a['unite']}** — Reste : **{reste} {a['unite']}**")
-                    st.markdown("**➕ Nouvelle réception partielle :**")
+                    st.progress(min(pct/100,1.0))
+                    st.markdown(f"**Reçu : {total_recu} {a['unite']} / Commandé : {qdem} {a['unite']} / Reste : {reste} {a['unite']}**")
+                    # Historique des réceptions partielles
+                    df_hist=qdf("SELECT mm.date_mvt AS Date,mm.quantite AS Quantité,mm.bon_livraison AS BL,mm.observation AS Observation FROM mouvements_materiaux mm WHERE mm.appro_id=? AND mm.type_mvt='ENTREE' ORDER BY mm.date_mvt",[aid])
+                    if not df_hist.empty:
+                        st.markdown("**📋 Réceptions enregistrées :**")
+                        df_hist.columns=[c.lower() for c in df_hist.columns]
+                        st.dataframe(df_hist,use_container_width=True)
+                    st.markdown("---")
+                    st.markdown("**➕ Enregistrer une nouvelle livraison :**")
                     c1r,c2r,c3r=st.columns(3)
-                    drec=c1r.date_input("Date réception",value=date.today(),key=f"drec_{aid}")
-                    qrec=c2r.number_input("Quantité reçue",min_value=0.01,max_value=max(reste,0.01),value=min(reste,max(reste,0.01)),key=f"qrec_{aid}")
+                    drec=c1r.date_input("Date de réception",value=date.today(),key=f"drec_{aid}")
+                    qrec=c2r.number_input("Quantité reçue",min_value=0.01,value=round(reste,2) if reste>0 else 1.0,key=f"qrec_{aid}")
                     bl=c3r.text_input("N° Bon de livraison",key=f"bl_{aid}")
+                    pu_r=st.number_input("Prix unitaire réel (optionnel)",min_value=0.0,value=float(a.get("prix_unitaire_estime",0) or 0),key=f"pur_{aid}")
                     obs_r=st.text_input("Observation",key=f"obs_rec_{aid}")
                     col_btn1,col_btn2=st.columns(2)
-                    if col_btn1.button("✅ Enregistrer cette réception",key=f"rec_{aid}"):
-                        exsql("INSERT INTO receptions_appro(appro_id,date_reception,quantite_recue,bon_livraison,observation)VALUES(?,?,?,?,?)",[aid,str(drec),qrec,bl,obs_r])
-                        nouveau_total=total_recu+qrec
-                        # Mise en stock automatique de la quantité reçue
+                    if col_btn1.button("💾 Enregistrer cette livraison + Mettre en stock",key=f"rec_{aid}"):
                         if a.get("materiau_id"):
-                            pu=float(a.get("prix_unitaire_estime",0) or 0)
-                            exsql("INSERT INTO mouvements_materiaux(date_mvt,rue_id,materiau_id,type_mvt,quantite,prix_unitaire,fournisseur,bon_livraison,appro_id)VALUES(?,?,?,?,?,?,?,?,?)",[str(drec),a.get("rue_id"),int(a["materiau_id"]),"ENTREE",qrec,pu,str(a.get("fournisseur","") or ""),bl,aid])
-                        exsql("UPDATE approvisionnements SET quantite_recue=?,date_reception=?,bon_livraison=? WHERE id=?",[nouveau_total,str(drec),bl,aid])
-                        audit("approvisionnements","UPDATE",aid,f"Réception partielle: {qrec} {a['unite']}")
-                        st.success(f"✅ {qrec} {a['unite']} réceptionnés et mis en stock."); st.rerun()
-                    if col_btn2.button("🔒 Clôturer ce BC (livraison terminée)",key=f"close_{aid}"):
-                        exsql("UPDATE approvisionnements SET statut='Réceptionné',quantite_recue=? WHERE id=?",[total_recu,aid])
-                        audit("approvisionnements","UPDATE",aid,"BC clôturé"); st.success("✅ BC clôturé."); st.rerun()
+                            exsql("INSERT INTO mouvements_materiaux(date_mvt,rue_id,materiau_id,type_mvt,quantite,prix_unitaire,fournisseur,bon_livraison,appro_id,observation)VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                  [str(drec),a.get("rue_id"),int(a["materiau_id"]),"ENTREE",qrec,pu_r,str(a.get("fournisseur","") or ""),bl,aid,obs_r])
+                        else:
+                            st.warning("⚠️ Aucun article de stock lié à ce BC. L'entrée stock ne peut pas être créée automatiquement.")
+                        exsql("UPDATE approvisionnements SET quantite_recue=?,date_reception=?,bon_livraison=? WHERE id=?",
+                              [total_recu+qrec,str(drec),bl,aid])
+                        audit("approvisionnements","UPDATE",aid,f"Réception partielle: {qrec} {a['unite']} — BL:{bl}")
+                        st.success(f"✅ {qrec} {a['unite']} réceptionnés et ajoutés au stock."); st.rerun()
+                    if col_btn2.button("🔒 Clôturer ce BC (livraison complète ou terminée)",key=f"close_{aid}"):
+                        exsql("UPDATE approvisionnements SET statut='Mis en stock',quantite_recue=? WHERE id=?",[total_recu,aid])
+                        audit("approvisionnements","UPDATE",aid,f"BC clôturé — total reçu: {total_recu} {a['unite']}")
+                        st.success("✅ BC clôturé et archivé."); st.rerun()
 
     with t5:
         st.subheader("Mise en stock")
@@ -1415,7 +1422,7 @@ elif page=="appro":
 elif page=="stock":
     st.title("📦 Stock Matériaux")
     labs,id_map=ch_label_map()
-    t1,t2,t3,t4,t5=st.tabs(["📋 Catalogue","📥 Entrée manuelle","📤 Sortie","✏️ Modifier mouvement","✏️ Modifier article"])
+    t1,t2,t3,t4,t5,t6=st.tabs(["📋 Catalogue","📥 Entrée manuelle","📤 Sortie","📊 Historique mouvements","✏️ Modifier mouvement","✏️ Modifier article"])
     with t1:
         df_m=get_mats()
         if not df_m.empty:
@@ -1464,6 +1471,36 @@ elif page=="stock":
                     rid_s2=id_map.get(ch_s) if ch_s!="(Général)" else None
                     exsql("INSERT INTO mouvements_materiaux(date_mvt,rue_id,materiau_id,type_mvt,quantite,observation)VALUES(?,?,?,?,?,?)",[str(ds),rid_s2,int(mr["id"]),"SORTIE",qs,obss]); st.success("✅ Sortie enregistrée."); st.rerun()
     with t4:
+        st.subheader("📊 Historique des mouvements de stock")
+        st.caption("Les entrées issues du Circuit Appro sont identifiées avec leur N° BC.")
+        filt_art=st.selectbox("Filtrer par article",["Tous"]+[m for m in get_mats()["nom"].tolist()],key="hist_art_filt")
+        filt_type=st.selectbox("Type",["Tous","ENTREE","SORTIE"],key="hist_type_filt")
+        df_hist_all=qdf(
+            "SELECT mm.date_mvt AS Date, mm.type_mvt AS Type, m.nom AS Article, "
+            "mm.quantite AS Quantité, mm.prix_unitaire AS PU, "
+            "COALESCE(r.nom,'Général') AS Chantier, mm.fournisseur AS Fournisseur, "
+            "mm.bon_livraison AS BL, "
+            "CASE WHEN mm.appro_id IS NOT NULL THEN 'Circuit Appro — BC: '||COALESCE(a.numero_bc,mm.appro_id::text) ELSE 'Saisie manuelle' END AS Provenance, "
+            "mm.observation AS Observation "
+            "FROM mouvements_materiaux mm "
+            "JOIN materiaux m ON m.id=mm.materiau_id "
+            "LEFT JOIN rues r ON r.id=mm.rue_id "
+            "LEFT JOIN approvisionnements a ON a.id=mm.appro_id "
+            "ORDER BY mm.date_mvt DESC LIMIT 500")
+        if not df_hist_all.empty:
+            df_hist_all.columns=[c.lower() for c in df_hist_all.columns]
+            if filt_art!="Tous": df_hist_all=df_hist_all[df_hist_all["article"]==filt_art]
+            if filt_type!="Tous": df_hist_all=df_hist_all[df_hist_all["type"]==filt_type]
+            # Métriques
+            ent=df_hist_all[df_hist_all["type"]=="ENTREE"]["quantité"].sum()
+            sor=df_hist_all[df_hist_all["type"]=="SORTIE"]["quantité"].sum()
+            c1m,c2m,c3m=st.columns(3)
+            c1m.metric("Total entrées",f"{ent:,.2f}"); c2m.metric("Total sorties",f"{sor:,.2f}"); c3m.metric("Dont Circuit Appro",f"{len(df_hist_all[df_hist_all['provenance'].str.startswith('Circuit')])} mvt")
+            st.dataframe(df_hist_all,use_container_width=True)
+            st.download_button("📥 Export",to_xl({"Mouvements":df_hist_all}),"mouvements_stock.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        else:
+            st.info("Aucun mouvement enregistré.")
+    with t5:
         st.subheader("✏️ Modifier / Supprimer un mouvement de stock")
         df_mvt=qdf("SELECT mm.id,mm.date_mvt AS date,mm.type_mvt AS type,m.nom AS materiau,mm.quantite AS quantite,mm.prix_unitaire AS pu,COALESCE(r.nom,'—') AS chantier,mm.fournisseur AS fournisseur,mm.observation AS observation FROM mouvements_materiaux mm JOIN materiaux m ON m.id=mm.materiau_id LEFT JOIN rues r ON r.id=mm.rue_id ORDER BY mm.date_mvt DESC LIMIT 200")
         if not df_mvt.empty: df_mvt.columns=[c.lower() for c in df_mvt.columns]
@@ -1479,7 +1516,7 @@ elif page=="stock":
             if sv:
                 exsql("UPDATE mouvements_materiaux SET quantite=?,prix_unitaire=?,fournisseur=?,observation=? WHERE id=?",[eq,epu,efn,eobs,int(mv["id"])]); st.success("✅ Modifié."); st.rerun()
             if dl: exsql("DELETE FROM mouvements_materiaux WHERE id=?",[int(mv["id"])]); st.success("Supprimé."); st.rerun()
-    with t5:
+    with t6:
         df_m=get_mats()
         if not df_m.empty:
             sel_ma=st.selectbox("Article à modifier",df_m["nom"].tolist(),key="mat_edit_sel"); rm=df_m[df_m["nom"]==sel_ma].iloc[0]
@@ -2514,49 +2551,13 @@ elif page=="maint":
                 desc_mp = st.text_area("Description de l'intervention *", height=100, key="mp_desc")
                 obs_mp = st.text_input("Observation", key="mp_obs")
                 if st.form_submit_button("💾 Enregistrer l'intervention"):
-                    if not desc_mp.strip():
-                        st.error("La description est obligatoire.")
+                    if not desc_mp.strip(): st.error("Description obligatoire.")
                     else:
-                        er = df_em[df_em["nom"]==eng_mp].iloc[0]
-                        mid = int(er["id"])
-                        exsql("INSERT INTO maintenance_materiels(materiel_id,date_maintenance,type_maintenance,description,cout,prestataire,pieces_changees,heures_compteur,prochain_entretien_h,observation)VALUES(?,?,?,?,?,?,?,?,?,?)",
-                              [mid, str(dm_p), type_mp, desc_mp.strip(), cout_mp, prest_mp.strip(), pieces_mp.strip(), hrs_mp, proch_mp, obs_mp.strip()])
-                        # Mettre à jour l'état si maintenance corrective
-                        if type_mp in ("Corrective","Réparation"):
-                            exsql("UPDATE materiels SET etat='Opérationnel',date_derniere_maintenance=?,heures_totales=? WHERE id=?",
-                                  [str(dm_p), hrs_mp, mid])
-                        else:
-                            exsql("UPDATE materiels SET date_derniere_maintenance=? WHERE id=?", [str(dm_p), mid])
-                        audit("maintenance_materiels", "CREATE", mid, f"{type_mp} sur {eng_mp}")
+                        exsql("INSERT INTO maintenance_materiels(materiel_id,date_maintenance,type_maintenance,description,cout,prestataire,pieces_changees,heures_compteur,observation)VALUES(?,?,?,?,?,?,?,?,?)",
+                              [eid_mp,str(date_mp),type_mp,desc_mp,cout_mp,prest_mp,pieces_mp,hc_mp,obs_mp])
+                        exsql("UPDATE materiels SET date_derniere_maintenance=?,heure_compteur=? WHERE id=?",[str(date_mp),hc_mp,eid_mp])
                         st.success("✅ Intervention enregistrée."); st.rerun()
 
-    with t2:
-        st.subheader("📋 Historique complet des maintenances")
-        # Filtres
-        fc1, fc2, fc3 = st.columns(3)
-        df_em2 = get_engins_maint()
-        engin_filt = fc1.selectbox("Filtrer par engin", ["(Tous)"] + (df_em2["nom"].tolist() if not df_em2.empty else []), key="mp_filt_eng")
-        type_filt = fc2.selectbox("Type", ["(Tous)","Préventive","Corrective","Vidange","Réparation","Inspection","Autre"], key="mp_filt_type")
-        periode_filt = fc3.selectbox("Période", ["Tout","Ce mois","3 mois","6 mois","Cette année"], key="mp_filt_per")
-
-        # Construire la requête
-        conds = ["1=1"]
-        params_h = []
-        if engin_filt != "(Tous)" and not df_em2.empty:
-            eid = int(df_em2[df_em2["nom"]==engin_filt].iloc[0]["id"])
-            conds.append("mm.materiel_id=?"); params_h.append(eid)
-        if type_filt != "(Tous)":
-            conds.append("mm.type_maintenance=?"); params_h.append(type_filt)
-        if periode_filt != "Tout":
-            import datetime as _dt
-            today_dt = date.today()
-            if periode_filt == "Ce mois": d_lim = today_dt.replace(day=1)
-            elif periode_filt == "3 mois": d_lim = today_dt - timedelta(days=90)
-            elif periode_filt == "6 mois": d_lim = today_dt - timedelta(days=180)
-            else: d_lim = today_dt.replace(month=1, day=1)
-            conds.append("mm.date_maintenance>=?"); params_h.append(str(d_lim))
-
-   
-
+# ── FIN DE L'APPLICATION ─────────────────────────────────────────
 else:
     st.warning(f"Page inconnue : {page}")
