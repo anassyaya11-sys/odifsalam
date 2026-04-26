@@ -1316,67 +1316,80 @@ elif page=="appro":
                         audit("approvisionnements","UPDATE",int(a["id"]),f"BC: {nbc}"); st.success(f"BC {nbc} émis."); st.rerun()
 
     with t4:
-        st.subheader("📦 Réception de livraison — saisie progressive")
-        st.caption("Chaque livraison partielle est enregistrée et mise en stock immédiatement. Le BC reste ouvert jusqu'à clôture manuelle.")
-        df_rec=qdf("SELECT a.*,COALESCE(r.nom,'Général') AS ch FROM approvisionnements a LEFT JOIN rues r ON r.id=a.rue_id WHERE a.statut='Bon de commande émis' ORDER BY a.date_besoin")
-        if df_rec.empty:
-            st.success("✅ Aucune livraison en attente.")
+        st.subheader("📦 Réception de livraison")
+        st.caption("Sélectionnez le BC, saisissez la quantité reçue ce jour. Répétez pour chaque livraison partielle. Clôturez quand la livraison est terminée.")
+        df_bc_rec=qdf("SELECT a.id,a.designation,a.unite,a.quantite_demandee,a.fournisseur,a.numero_bc,a.rue_id,COALESCE(r.nom,'Général') AS ch FROM approvisionnements a LEFT JOIN rues r ON r.id=a.rue_id WHERE a.statut='Bon de commande émis' ORDER BY a.date_besoin DESC")
+        if df_bc_rec.empty:
+            st.info("ℹ️ Aucun bon de commande en attente de réception.")
         else:
-            for _,a in df_rec.iterrows():
-                aid=int(a["id"]); qdem=float(a.get("quantite_demandee",0) or 0)
-                # Total déjà reçu via mouvements_materiaux liés à ce BC
-                df_deja=qdf("SELECT COALESCE(SUM(quantite),0) AS total FROM mouvements_materiaux WHERE appro_id=? AND type_mvt='ENTREE'",[aid])
-                total_recu=float(_v(df_deja,"total"))
-                reste=max(0.0, qdem - total_recu)
-                pct=min(100.0, round(total_recu/qdem*100,1)) if qdem else 0.0
-                label_exp=f"#{aid} — {a['designation']} | BC: {a.get('numero_bc','—')} | {a.get('fournisseur','—')} | ✅ {total_recu}/{qdem} {a['unite']} ({pct}%)"
-                with st.expander(label_exp):
-                    # Barre de progression
-                    st.progress(min(pct/100,1.0))
-                    st.markdown(f"**Reçu : {total_recu} {a['unite']} / Commandé : {qdem} {a['unite']} / Reste : {reste} {a['unite']}**")
-                    # Historique des réceptions partielles
-                    df_hist=qdf("SELECT mm.date_mvt AS Date,mm.quantite AS Quantité,mm.bon_livraison AS BL,mm.observation AS Observation FROM mouvements_materiaux mm WHERE mm.appro_id=? AND mm.type_mvt='ENTREE' ORDER BY mm.date_mvt",[aid])
-                    if not df_hist.empty:
-                        st.markdown("**📋 Réceptions enregistrées :**")
-                        df_hist.columns=[c.lower() for c in df_hist.columns]
-                        st.dataframe(df_hist,use_container_width=True)
-                    st.markdown("---")
-                    st.markdown("**➕ Enregistrer une nouvelle livraison :**")
-                    c1r,c2r,c3r=st.columns(3)
-                    drec=c1r.date_input("Date de réception",value=date.today(),key=f"drec_{aid}")
-                    qrec=c2r.number_input("Quantité reçue",min_value=0.01,value=round(reste,2) if reste>0 else 1.0,key=f"qrec_{aid}")
-                    bl=c3r.text_input("N° Bon de livraison",key=f"bl_{aid}")
-                    pu_r=st.number_input("Prix unitaire réel (optionnel)",min_value=0.0,value=float(a.get("prix_unitaire_estime",0) or 0),key=f"pur_{aid}")
-                    obs_r=st.text_input("Observation",key=f"obs_rec_{aid}")
-                    col_btn1,col_btn2=st.columns(2)
-                    if col_btn1.button("💾 Enregistrer cette livraison + Mettre en stock",key=f"rec_{aid}"):
-                        if a.get("materiau_id"):
-                            exsql("INSERT INTO mouvements_materiaux(date_mvt,rue_id,materiau_id,type_mvt,quantite,prix_unitaire,fournisseur,bon_livraison,appro_id,observation)VALUES(?,?,?,?,?,?,?,?,?,?)",
-                                  [str(drec),a.get("rue_id"),int(a["materiau_id"]),"ENTREE",qrec,pu_r,str(a.get("fournisseur","") or ""),bl,aid,obs_r])
-                        else:
-                            st.warning("⚠️ Aucun article de stock lié à ce BC. L'entrée stock ne peut pas être créée automatiquement.")
-                        exsql("UPDATE approvisionnements SET quantite_recue=?,date_reception=?,bon_livraison=? WHERE id=?",
-                              [total_recu+qrec,str(drec),bl,aid])
-                        audit("approvisionnements","UPDATE",aid,f"Réception partielle: {qrec} {a['unite']} — BL:{bl}")
-                        st.success(f"✅ {qrec} {a['unite']} réceptionnés et ajoutés au stock."); st.rerun()
-                    if col_btn2.button("🔒 Clôturer ce BC (livraison complète ou terminée)",key=f"close_{aid}"):
-                        exsql("UPDATE approvisionnements SET statut='Mis en stock',quantite_recue=? WHERE id=?",[total_recu,aid])
-                        audit("approvisionnements","UPDATE",aid,f"BC clôturé — total reçu: {total_recu} {a['unite']}")
-                        st.success("✅ BC clôturé et archivé."); st.rerun()
+            # Sélection du BC
+            df_bc_rec["label_bc"]=df_bc_rec.apply(lambda r:f"BC #{r['numero_bc'] or r['id']} — {r['designation']} | {r['fournisseur'] or '—'} | {r['ch']} | {r['quantite_demandee']} {r['unite']}",axis=1)
+            sel_bc=st.selectbox("Sélectionner le Bon de Commande",df_bc_rec["label_bc"].tolist(),key="rec_bc_sel")
+            bc=df_bc_rec[df_bc_rec["label_bc"]==sel_bc].iloc[0]
+            aid=int(bc["id"]); qdem=float(bc["quantite_demandee"] or 0)
+            # Réceptions déjà enregistrées pour ce BC
+            df_recus=qdf("SELECT date_reception AS Date,quantite_recue AS Quantité,bon_livraison AS BL,observation AS Observation FROM receptions_appro WHERE appro_id=? ORDER BY date_reception",[aid])
+            total_recu=float(_v(qdf("SELECT COALESCE(SUM(quantite_recue),0) AS s FROM receptions_appro WHERE appro_id=?",[aid]),"s"))
+            reste=max(0.0,qdem-total_recu)
+            pct=min(100.0,round(total_recu/qdem*100,1)) if qdem else 0.0
+            # Résumé BC
+            c1i,c2i,c3i=st.columns(3)
+            c1i.metric("Commandé",f"{qdem} {bc['unite']}")
+            c2i.metric("Déjà reçu",f"{total_recu} {bc['unite']}")
+            c3i.metric("Reste à recevoir",f"{reste} {bc['unite']}")
+            st.progress(min(pct/100,1.0),text=f"{pct}% reçu")
+            # Historique
+            if not df_recus.empty:
+                st.markdown("**📋 Historique des réceptions :**")
+                df_recus.columns=[c.lower() for c in df_recus.columns]
+                st.dataframe(df_recus,use_container_width=True)
+            st.markdown("---")
+            st.markdown("**➕ Nouvelle livraison partielle :**")
+            with st.form("f_reception_partielle"):
+                c1r,c2r,c3r=st.columns(3)
+                drec=c1r.date_input("Date de réception",value=date.today(),key="drec_form")
+                qrec=c2r.number_input("Quantité reçue",min_value=0.01,value=round(reste,2) if reste>0 else 1.0,key="qrec_form")
+                bl=c3r.text_input("N° Bon de livraison",key="bl_form")
+                obs_r=st.text_input("Observation",key="obs_rec_form")
+                c_sv,c_cl=st.columns(2)
+                sv_rec=c_sv.form_submit_button("💾 Enregistrer cette réception")
+                cl_rec=c_cl.form_submit_button("🔒 Clôturer ce BC (réception terminée → Mise en stock)")
+            if sv_rec:
+                exsql("INSERT INTO receptions_appro(appro_id,date_reception,quantite_recue,bon_livraison,observation)VALUES(?,?,?,?,?)",[aid,str(drec),qrec,bl,obs_r])
+                exsql("UPDATE approvisionnements SET quantite_recue=?,date_reception=?,bon_livraison=? WHERE id=?",[total_recu+qrec,str(drec),bl,aid])
+                audit("approvisionnements","UPDATE",aid,f"Réception partielle: {qrec} {bc['unite']} BL:{bl}")
+                st.success(f"✅ {qrec} {bc['unite']} réceptionnés. Total reçu : {total_recu+qrec}/{qdem} {bc['unite']}."); st.rerun()
+            if cl_rec:
+                exsql("UPDATE approvisionnements SET statut='Réceptionné',quantite_recue=? WHERE id=?",[total_recu,aid])
+                audit("approvisionnements","UPDATE",aid,f"BC clôturé — total reçu: {total_recu}")
+                st.success("✅ BC clôturé. Passez à l'étape Mise en stock."); st.rerun()
 
     with t5:
-        st.subheader("Mise en stock")
+        st.subheader("📥 Mise en stock")
+        st.caption("Valide l'entrée en stock des articles réceptionnés. Les entrées apparaissent dans Stock Matériaux avec la référence BC.")
         df_stk=qdf("SELECT a.*,COALESCE(r.nom,'Général') AS ch FROM approvisionnements a LEFT JOIN rues r ON r.id=a.rue_id WHERE a.statut='Réceptionné' ORDER BY a.date_besoin")
-        if df_stk.empty: st.success("✅ Aucun article en attente de mise en stock.")
+        if df_stk.empty:
+            st.success("✅ Aucun article en attente de mise en stock.")
         else:
             for _,a in df_stk.iterrows():
-                with st.expander(f"#{int(a['id'])} — {a['designation']} | Reçu: {a.get('quantite_recue','?')} {a['unite']} | BL: {a.get('bon_livraison','—')}"):
-                    c1s,c2s,c3s=st.columns(3); dstk=c1s.date_input("Date mise en stock",value=date.today(),key=f"dstk_{a['id']}"); qstk=c2s.number_input("Quantité mise en stock",min_value=0.0,value=float(a.get("quantite_recue",0) or 0),key=f"qstk_{a['id']}"); pu_r=c3s.number_input("Prix unitaire réel",min_value=0.0,value=float(a.get("prix_unitaire_estime",0) or 0),key=f"pustk_{a['id']}")
-                    if st.button("✅ Confirmer mise en stock",key=f"stk_{a['id']}"):
-                        exsql("UPDATE approvisionnements SET statut='Mis en stock',date_mise_stock=?,quantite_mise_stock=?,prix_unitaire_reel=? WHERE id=?",[str(dstk),qstk,pu_r,int(a["id"])])
+                aid_s=int(a["id"])
+                total_rec_s=float(_v(qdf("SELECT COALESCE(SUM(quantite_recue),0) AS s FROM receptions_appro WHERE appro_id=?",[aid_s]),"s")) or float(a.get("quantite_recue",0) or 0)
+                with st.expander(f"#{aid_s} — {a['designation']} | Reçu: {total_rec_s} {a['unite']} | BC: {a.get('numero_bc','—')} | {a.get('fournisseur','—')}"):
+                    df_rec_hist=qdf("SELECT date_reception AS Date,quantite_recue AS Qté,bon_livraison AS BL FROM receptions_appro WHERE appro_id=? ORDER BY date_reception",[aid_s])
+                    if not df_rec_hist.empty:
+                        df_rec_hist.columns=[c.lower() for c in df_rec_hist.columns]
+                        st.dataframe(df_rec_hist,use_container_width=True)
+                    c1s,c2s,c3s=st.columns(3)
+                    dstk=c1s.date_input("Date mise en stock",value=date.today(),key=f"dstk_{aid_s}")
+                    qstk=c2s.number_input("Quantité à mettre en stock",min_value=0.01,value=round(total_rec_s,2) if total_rec_s>0 else 1.0,key=f"qstk_{aid_s}")
+                    pu_s=c3s.number_input("Prix unitaire réel",min_value=0.0,value=float(a.get("prix_unitaire_estime",0) or 0),key=f"pustk_{aid_s}")
+                    if st.button("✅ Confirmer mise en stock → Stock Matériaux",key=f"stk_{aid_s}"):
                         if a.get("materiau_id"):
-                            exsql("INSERT INTO mouvements_materiaux(date_mvt,rue_id,materiau_id,type_mvt,quantite,prix_unitaire,fournisseur,bon_livraison,appro_id)VALUES(?,?,?,?,?,?,?,?,?)",[str(dstk),a.get("rue_id"),int(a["materiau_id"]),"ENTREE",qstk,pu_r,str(a.get("fournisseur","") or ""),str(a.get("bon_livraison","") or ""),int(a["id"])])
-                        audit("approvisionnements","UPDATE",int(a["id"]),"Mis en stock"); st.success("✅ Mis en stock. Entrée stock créée."); st.rerun()
+                            exsql("INSERT INTO mouvements_materiaux(date_mvt,rue_id,materiau_id,type_mvt,quantite,prix_unitaire,fournisseur,bon_livraison,appro_id,observation)VALUES(?,?,?,?,?,?,?,?,?,?)",
+                                  [str(dstk),a.get("rue_id"),int(a["materiau_id"]),"ENTREE",qstk,pu_s,str(a.get("fournisseur","") or ""),str(a.get("bon_livraison","") or ""),aid_s,f"Via Circuit Appro BC:{a.get('numero_bc','')}"])
+                        exsql("UPDATE approvisionnements SET statut='Mis en stock',date_mise_stock=?,quantite_mise_stock=?,prix_unitaire_reel=? WHERE id=?",[str(dstk),qstk,pu_s,aid_s])
+                        audit("approvisionnements","UPDATE",aid_s,"Mis en stock")
+                        st.success("✅ Mis en stock. Entrée créée dans Stock Matériaux."); st.rerun()
 
     with t6:
         st.subheader("✏️ Modifier une saisie d'approvisionnement")
