@@ -137,6 +137,7 @@ def init_db():
         "CREATE TABLE IF NOT EXISTS incidents (id SERIAL PRIMARY KEY, date_incident TEXT NOT NULL, rue_id INTEGER REFERENCES rues(id), type_incident TEXT NOT NULL, gravite TEXT DEFAULT 'Mineur', description TEXT NOT NULL, personne_concernee TEXT DEFAULT '', mesures_prises TEXT DEFAULT '', nb_victimes INTEGER DEFAULT 0, cout_estime REAL DEFAULT 0, actions_correctives TEXT DEFAULT '', statut TEXT DEFAULT 'Ouvert', cloture INTEGER DEFAULT 0, observation TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS audit_trail (id SERIAL PRIMARY KEY, date_action TEXT NOT NULL, table_concernee TEXT NOT NULL, action TEXT NOT NULL, enregistrement_id INTEGER, details TEXT DEFAULT '')",
         "CREATE TABLE IF NOT EXISTS audit_log (id SERIAL PRIMARY KEY, timestamp TEXT NOT NULL, table_name TEXT NOT NULL, action TEXT NOT NULL, record_id INTEGER, details TEXT DEFAULT '')",
+        "CREATE TABLE IF NOT EXISTS receptions_appro (id SERIAL PRIMARY KEY, appro_id INTEGER NOT NULL REFERENCES approvisionnements(id) ON DELETE CASCADE, date_reception TEXT NOT NULL, quantite_recue REAL DEFAULT 0, bon_livraison TEXT DEFAULT '', observation TEXT DEFAULT '')",
     ]
     try:
         for ddl in ddl_statements:

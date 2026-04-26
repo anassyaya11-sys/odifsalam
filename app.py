@@ -1316,16 +1316,46 @@ elif page=="appro":
                         audit("approvisionnements","UPDATE",int(a["id"]),f"BC: {nbc}"); st.success(f"BC {nbc} émis."); st.rerun()
 
     with t4:
-        st.subheader("Réception de livraison")
+        st.subheader("📦 Réception de livraison — livraisons progressives")
         df_rec=qdf("SELECT a.*,COALESCE(r.nom,'Général') AS ch FROM approvisionnements a LEFT JOIN rues r ON r.id=a.rue_id WHERE a.statut='Bon de commande émis' ORDER BY a.date_besoin")
         if df_rec.empty: st.success("✅ Aucune livraison en attente.")
         else:
             for _,a in df_rec.iterrows():
-                with st.expander(f"#{int(a['id'])} — {a['designation']} | Fourn: {a.get('fournisseur','—')} | BC: {a.get('numero_bc','—')}"):
-                    c1r,c2r,c3r=st.columns(3); drec=c1r.date_input("Date réception",value=date.today(),key=f"drec_{a['id']}"); qrec=c2r.number_input("Quantité reçue",min_value=0.0,value=float(a.get("quantite_demandee",0)),key=f"qrec_{a['id']}"); bl=c3r.text_input("N° Bon de livraison",key=f"bl_{a['id']}")
-                    if st.button("✅ Confirmer réception",key=f"rec_{a['id']}"):
-                        exsql("UPDATE approvisionnements SET statut='Réceptionné',date_reception=?,quantite_recue=?,bon_livraison=? WHERE id=?",[str(drec),qrec,bl,int(a["id"])])
-                        audit("approvisionnements","UPDATE",int(a["id"]),"Réceptionné"); st.success("✅ Réception confirmée."); st.rerun()
+                aid=int(a["id"]); qdem=float(a.get("quantite_demandee",0) or 0)
+                # Total déjà reçu pour ce BC
+                df_deja=qdf("SELECT COALESCE(SUM(quantite_recue),0) AS total FROM receptions_appro WHERE appro_id=?",[aid])
+                total_recu=float(_v(df_deja,"total"))
+                reste=max(0, qdem - total_recu)
+                pct=min(100, round(total_recu/qdem*100,1)) if qdem else 0
+                label_exp=f"#{aid} — {a['designation']} | BC: {a.get('numero_bc','—')} | {a.get('fournisseur','—')} | Reçu: {total_recu}/{qdem} {a['unite']} ({pct}%)"
+                with st.expander(label_exp):
+                    # Historique des réceptions partielles
+                    df_hist=qdf("SELECT date_reception,quantite_recue,bon_livraison,observation FROM receptions_appro WHERE appro_id=? ORDER BY date_reception",[aid])
+                    if not df_hist.empty:
+                        st.markdown("**📋 Historique des réceptions :**")
+                        st.dataframe(df_hist, use_container_width=True)
+                    # Barre de progression
+                    st.progress(pct/100, text=f"Reçu : **{total_recu} / {qdem} {a['unite']}** — Reste : **{reste} {a['unite']}**")
+                    st.markdown("**➕ Nouvelle réception partielle :**")
+                    c1r,c2r,c3r=st.columns(3)
+                    drec=c1r.date_input("Date réception",value=date.today(),key=f"drec_{aid}")
+                    qrec=c2r.number_input("Quantité reçue",min_value=0.01,max_value=max(reste,0.01),value=min(reste,max(reste,0.01)),key=f"qrec_{aid}")
+                    bl=c3r.text_input("N° Bon de livraison",key=f"bl_{aid}")
+                    obs_r=st.text_input("Observation",key=f"obs_rec_{aid}")
+                    col_btn1,col_btn2=st.columns(2)
+                    if col_btn1.button("✅ Enregistrer cette réception",key=f"rec_{aid}"):
+                        exsql("INSERT INTO receptions_appro(appro_id,date_reception,quantite_recue,bon_livraison,observation)VALUES(?,?,?,?,?)",[aid,str(drec),qrec,bl,obs_r])
+                        nouveau_total=total_recu+qrec
+                        # Mise en stock automatique de la quantité reçue
+                        if a.get("materiau_id"):
+                            pu=float(a.get("prix_unitaire_estime",0) or 0)
+                            exsql("INSERT INTO mouvements_materiaux(date_mvt,rue_id,materiau_id,type_mvt,quantite,prix_unitaire,fournisseur,bon_livraison,appro_id)VALUES(?,?,?,?,?,?,?,?,?)",[str(drec),a.get("rue_id"),int(a["materiau_id"]),"ENTREE",qrec,pu,str(a.get("fournisseur","") or ""),bl,aid])
+                        exsql("UPDATE approvisionnements SET quantite_recue=?,date_reception=?,bon_livraison=? WHERE id=?",[nouveau_total,str(drec),bl,aid])
+                        audit("approvisionnements","UPDATE",aid,f"Réception partielle: {qrec} {a['unite']}")
+                        st.success(f"✅ {qrec} {a['unite']} réceptionnés et mis en stock."); st.rerun()
+                    if col_btn2.button("🔒 Clôturer ce BC (livraison terminée)",key=f"close_{aid}"):
+                        exsql("UPDATE approvisionnements SET statut='Réceptionné',quantite_recue=? WHERE id=?",[total_recu,aid])
+                        audit("approvisionnements","UPDATE",aid,"BC clôturé"); st.success("✅ BC clôturé."); st.rerun()
 
     with t5:
         st.subheader("Mise en stock")
@@ -2526,54 +2556,7 @@ elif page=="maint":
             else: d_lim = today_dt.replace(month=1, day=1)
             conds.append("mm.date_maintenance>=?"); params_h.append(str(d_lim))
 
-        df_hist = qdf(f"""
-            SELECT mm.date_maintenance AS Date, m.nom AS Engin,
-                   mm.type_maintenance AS Type, mm.description AS Description,
-                   mm.cout AS Coût, mm.prestataire AS Prestataire,
-                   mm.pieces_changees AS Pièces, mm.heures_compteur AS "Hrs compteur"
-            FROM maintenance_materiels mm
-            JOIN materiels m ON m.id=mm.materiel_id
-            WHERE {" AND ".join(conds)}
-            ORDER BY mm.date_maintenance DESC LIMIT 500
-        """, params_h)
-        if df_hist.empty:
-            st.info("Aucune maintenance trouvée avec ces filtres.")
-        else:
-            st.metric("Interventions", len(df_hist))
-            if "Coût" in df_hist.columns:
-                st.metric("Coût total", fmt(df_hist["Coût"].sum()))
-            st.dataframe(df_hist, use_container_width=True)
-            st.download_button("📥 Export", to_xl({"Maintenance": df_hist}),
-                               "historique_maintenance.xlsx",
-                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+   
 
-    with t3:
-        st.subheader("📊 Récapitulatif par engin")
-        df_em3 = get_engins_maint()
-        if df_em3.empty:
-            st.info("Aucun engin.")
-        else:
-            rows_eng = []
-            for _, e in df_em3.iterrows():
-                eid = int(e["id"])
-                r_m = qdf("SELECT COUNT(*) AS nb, COALESCE(SUM(cout),0) AS total_cout FROM maintenance_materiels WHERE materiel_id=?", [eid])
-                nb = int(_v(r_m, "nb")); ct = float(_v(r_m, "total_cout"))
-                last = qdf("SELECT MAX(date_maintenance) AS last FROM maintenance_materiels WHERE materiel_id=?", [eid])
-                rows_eng.append({
-                    "Engin": e["nom"],
-                    "Type": str(e.get("type_materiel") or ""),
-                    "État": str(e.get("etat") or "—"),
-                    "Nb interventions": nb,
-                    "Coût total maintenance": ct,
-                    "Dernière intervention": str(_v(last, "last", "—"))
-                })
-            df_recap_eng = pd.DataFrame(rows_eng)
-            st.dataframe(df_recap_eng, use_container_width=True)
-            st.metric("Coût total parc", fmt(df_recap_eng["Coût total maintenance"].sum()))
-
-
-
-
-# ── FIN DE L'APPLICATION ─────────────────────────────────────────────
 else:
     st.warning(f"Page inconnue : {page}")
