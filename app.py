@@ -1707,6 +1707,9 @@ elif page=="journal":
                     observations_full="\n".join(parts)
                     exsql("INSERT INTO journal_chantier(date_journal,rue_id,meteo,temperature,nb_ouvriers,nb_encadrants,travaux_realises,observations)VALUES(?,?,?,?,?,?,?,?)",
                           [str(date_j1),rid_j1,meteo_j1,temp_j1,nb_ouvriers,nb_encad,travaux_j1,observations_full])
+                    # Réinitialiser la date pour la prochaine saisie
+                    for k in ["jrn_saisie_date","jrn_saisie_trav","jrn_saisie_inc","jrn_saisie_liv","jrn_saisie_vis","jrn_saisie_obs","jrn_saisie_ouv","jrn_saisie_enc"]:
+                        if k in st.session_state: del st.session_state[k]
                     st.success("✅ Entrée journal enregistrée."); st.rerun()
 
     with t2:
