@@ -1945,23 +1945,24 @@ elif page=="caisse":
             ch_ca2="Tous"
         mois_ca=col2.selectbox("Mois",["Tous"]+[f"{y}-{m:02d}" for y in range(2023,date.today().year+1) for m in range(1,13) if f"{y}-{m:02d}"<=date.today().strftime("%Y-%m")],key="ca_mois")
         if ch_ca2=="Tous" or not labs:
-            base_q="SELECT cc.id,cc.date_op AS Date,COALESCE(r.nom,'—') AS Chantier,cc.type_op AS Type,cc.categorie AS Catégorie,cc.montant AS Montant,cc.beneficiaire AS Bénéficiaire,cc.reference_piece AS Référence FROM caisse_chantier cc LEFT JOIN rues r ON r.id=cc.rue_id"
+            base_q="SELECT cc.id,cc.date_op AS date,COALESCE(r.nom,'—') AS chantier,cc.type_op AS type,cc.categorie AS categorie,cc.montant AS montant,cc.beneficiaire AS beneficiaire,cc.reference_piece AS reference FROM caisse_chantier cc LEFT JOIN rues r ON r.id=cc.rue_id"
             if mois_ca!="Tous":
                 df_ca=qdf(f"{base_q} WHERE strftime('%Y-%m',cc.date_op)=? ORDER BY cc.date_op DESC LIMIT 200",[mois_ca])
             else:
                 df_ca=qdf(f"{base_q} ORDER BY cc.date_op DESC LIMIT 200")
         else:
             rid_ca2=id_map.get(ch_ca2)
-            base_q="SELECT cc.id,cc.date_op AS Date,COALESCE(r.nom,'—') AS Chantier,cc.type_op AS Type,cc.categorie AS Catégorie,cc.montant AS Montant,cc.beneficiaire AS Bénéficiaire,cc.reference_piece AS Référence FROM caisse_chantier cc LEFT JOIN rues r ON r.id=cc.rue_id WHERE cc.rue_id=?"
+            base_q="SELECT cc.id,cc.date_op AS date,COALESCE(r.nom,'—') AS chantier,cc.type_op AS type,cc.categorie AS categorie,cc.montant AS montant,cc.beneficiaire AS beneficiaire,cc.reference_piece AS reference FROM caisse_chantier cc LEFT JOIN rues r ON r.id=cc.rue_id WHERE cc.rue_id=?"
             if mois_ca!="Tous":
                 df_ca=qdf(f"{base_q} AND strftime('%Y-%m',cc.date_op)=? ORDER BY cc.date_op DESC LIMIT 200",[rid_ca2,mois_ca])
             else:
                 df_ca=qdf(f"{base_q} ORDER BY cc.date_op DESC LIMIT 200",[rid_ca2])
+        if not df_ca.empty: df_ca.columns=[c.lower() for c in df_ca.columns]
         if df_ca.empty: st.info("Aucune opération.")
         else:
-            dep=df_ca[df_ca["Type"]=="Dépense"]["Montant"].sum()
-            rec=df_ca[df_ca["Type"]=="Recette"]["Montant"].sum()
-            avance=df_ca[df_ca["Type"]=="Avance"]["Montant"].sum()
+            dep=df_ca[df_ca["type"]=="Dépense"]["montant"].sum()
+            rec=df_ca[df_ca["type"]=="Recette"]["montant"].sum()
+            avance=df_ca[df_ca["type"]=="Avance"]["montant"].sum()
             solde=rec - dep - avance
             col_d,col_r,col_av,col_s=st.columns(4)
             col_d.metric("💸 Total Dépenses",f"{dep:,.0f}",delta=None)
@@ -1975,16 +1976,16 @@ elif page=="caisse":
             # Tableau avec solde cumulatif ligne par ligne
             df_solde=df_ca.drop(columns=["id"],errors="ignore").copy()
             # Trier par date croissante pour calculer le solde cumulatif
-            df_solde_sorted=df_solde.sort_values("Date").copy()
+            df_solde_sorted=df_solde.sort_values("date").copy()
             def _impact(t,m):
                 if t=="Recette": return float(m)
                 elif t in ("Dépense","Avance"): return -float(m)
                 return 0
-            df_solde_sorted["Impact"]=df_solde_sorted.apply(lambda r:_impact(r["Type"],r["Montant"]),axis=1)
+            df_solde_sorted["Impact"]=df_solde_sorted.apply(lambda r:_impact(r["type"],r["montant"]),axis=1)
             df_solde_sorted["Solde cumulé"]=df_solde_sorted["Impact"].cumsum().round(0)
             df_solde_sorted=df_solde_sorted.drop(columns=["Impact"])
             # Réafficher du plus récent au plus ancien
-            st.dataframe(df_solde_sorted.sort_values("Date",ascending=False),
+            st.dataframe(df_solde_sorted.sort_values("date",ascending=False),
                          use_container_width=True,hide_index=True)
 
     with t3:
